@@ -1,142 +1,82 @@
 # -*- coding: utf-8 -*-
-from __future__ import annotations
-import io
-import json
-import re
-import numpy as np
-import pandas as pd
 import streamlit as st
-from rapidfuzz import fuzz
-from unidecode import unidecode
 
 # ============================================================================
-# ⚙️ 1. CORE INFRASTRUCTURE: TỐI ƯU HÓA DUNG LƯỢNG (RAM OPTIMIZATION)
+# ⚙️ 1. CẤU HÌNH TRANG STREAMLIT
 # ============================================================================
+st.set_page_config(
+    page_title="Smart Logistics Dashboard",
+    page_icon="🚚",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-INT32_MIN, INT32_MAX = -2_147_483_648, 2_147_483_647
-FLOAT32_SAFE_MAX = 1e7
-KEEP_FLOAT64 = {"lat", "lng", "lon", "latitude", "longitude"}
+# ============================================================================
+# 📦 2. IMPORT CÁC MODULE ĐÃ HOÀN THÀNH
+# ============================================================================
+# 5 Module nhập liệu Master Data (nằm trong thư mục modules)
+from modules.fleet_master import render_fleet_input_section
+from modules.warehouse_master import render_warehouse_input_section
+from modules.product_master import render_product_input_section
+from modules.orders_master import render_orders_input_section
 
-def optimize_dtypes(df: pd.DataFrame, categorize: bool = False, cat_ratio: float = 0.5, keep_float64: set = KEEP_FLOAT64) -> pd.DataFrame:
-    """
-    Tối ưu dung lượng RAM của DataFrame:
-    - Ép kiểu số nguyên 64-bit về 32-bit nếu nằm trong khoảng an toàn.
-    - Ép kiểu số thực 64-bit về 32-bit (giữ nguyên float64 cho tọa độ GIS).
-    - Tự động chuyển đổi chuỗi lặp lại nhiều thành kiểu 'category'.
-    """
-    if df is None or len(df) == 0 or len(df.columns) == 0 or df.columns.duplicated().any():
-        return df
-    
-    out = df.copy()
-    for col in out.columns:
-        s = out[col]
-        dtype = s.dtype
-        try:
-            is_text = (dtype == object) or (pd.api.types.is_string_dtype(dtype) and not isinstance(dtype, pd.CategoricalDtype))
-            if categorize and is_text and len(s) > 0:
-                if s.nunique(dropna=True) / len(s) < cat_ratio:
-                    out[col] = s.astype("category")
-                continue
-            if not isinstance(dtype, np.dtype):
-                continue
-            
-            # Tối ưu kiểu số nguyên
-            if dtype.kind == "i" and dtype.itemsize > 4:
-                if s.min() >= INT32_MIN and s.max() <= INT32_MAX:
-                    out[col] = s.astype("int32")
-            # Tối ưu kiểu số thực (Tránh hạ cấp tọa độ GIS)
-            elif dtype.kind == "f" and dtype.itemsize > 4:
-                if str(col).strip().lower() in keep_float64:
-                    continue
-                mx = s.abs().max()
-                if pd.isna(mx) or mx < FLOAT32_SAFE_MAX:
-                    out[col] = s.astype("float32")
-        except Exception:
-            continue
-    return out
-
-def mem_kb(df: pd.DataFrame) -> float:
-    """Tính dung lượng RAM hiện tại của DataFrame (KB)."""
-    if df is None or df.empty:
-        return 0.0
-    return float(df.memory_usage(deep=True).sum()) / 1024.0
+# Module Orders Solving (nằm trong thư mục modules2)
+from modules2.orders_solving import render_orders_solving_tab
 
 
 # ============================================================================
-# ⚙️ 2. CORE INFRASTRUCTURE: SEMANTIC MAPPING & DATA PROFILING THÔNG MINH
+# 🖥️ 3. GIAO DIỆN CHÍNH CỦA ỨNG DỤNG
 # ============================================================================
+def main():
+    st.title("🚚 Smart Logistics — Hệ Thống Chuẩn Hóa & Điều Phối Vận Tải")
+    st.caption("Tác giả: Phạm Minh Thái | Hệ thống tối ưu hóa dữ liệu & định tuyến thông minh")
 
-def norm_basic(v: str) -> str:
-    """Chuẩn hóa chuỗi: Bỏ dấu tiếng Việt, chuyển chữ thường, loại bỏ ký tự đặc biệt."""
-    if v is None:
-        return ""
-    return re.sub(r"[^a-z0-9 ]+", " ", unidecode(str(v)).lower()).strip()
+    # Thanh Sidebar quản lý nhanh
+    with st.sidebar:
+        st.header("⚙️ Quản Lý Hệ Thống")
+        st.info("💡 **Thứ tự thực hiện:**\n1. Nhập Xe → Kho → Sản phẩm → Đơn hàng ở **Tab 1**.\n2. Phân tích trực quan ở **Tab 2**.")
+        
+        if st.button("🧹 Giải phóng RAM & Reset Bộ Nhớ", type="secondary", use_container_width=True):
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            st.rerun()
 
-def default_profile_score(series: pd.Series, field_name: str) -> float:
-    """
-    Data Profiling: Kiểm tra độ tương thích về mặt dữ liệu thực tế trong cột.
-    Trả về điểm số từ 0.0 -> 1.0.
-    """
-    valid_s = series.dropna().astype(str).str.strip()
-    valid_s = valid_s[valid_s != ""]
-    if valid_s.empty:
-        return 0.0
-    
-    # Nếu là trường định lượng/số
-    if any(k in field_name.lower() for k in ["weight", "volume", "speed", "distance", "cost", "price", "qty", "quantity", "kg", "m3"]):
-        numeric_ratio = float(valid_s.str.replace(r"[^\d.]", "", regex=True).str.len().gt(0).mean())
-        return numeric_ratio
-    
-    # Nếu là trường định danh ID / Tên / Mã
-    return float(valid_s.nunique() / len(valid_s))
+    # Chỉ hiển thị đúng 2 Tab đã làm xong
+    tab_input, tab_solving = st.tabs([
+        "📥 1. Nhập Dữ Liệu Khách Hàng",
+        "🧩 2. Orders Solving"
+    ])
 
-def basic_semantic_mapping(
-    df: pd.DataFrame, 
-    fields: dict[str, list[str]], 
-    profile_fn = default_profile_score, 
-    threshold: float = 0.35
-) -> dict[str, tuple[str | None, float, str]]:
-    """
-    Ánh xạ ngữ nghĩa cột dữ liệu đầu vào với Schema chuẩn của hệ thống:
-    - Kết hợp So khớp chuỗi mờ (RapidFuzz token_set_ratio)
-    - So khớp từ khóa chính xác (Keyword matching)
-    - Kiểm tra cấu trúc dữ liệu thực tế (Data Profiling)
-    """
-    result = {}
-    used_cols = set()
+    # ------------------------------------------------------------------------
+    # 📥 TAB 1: NHẬP & CHUẨN HÓA DỮ LIỆU KHÁCH HÀNG (MODULES)
+    # ------------------------------------------------------------------------
+    with tab_input:
+        st.markdown("## 📋 CHƯƠNG TRÌNH NHẬP & CHUẨN HÓA MASTER DATA")
+        st.info("Quét tự động Semantic Mapping, tối ưu dung lượng RAM và cho phép chỉnh sửa/kéo thả cột trực tiếp trước khi chốt file.")
+        
+        # 1. Hạm đội xe (xuất DIM_VEHICLE.xlsx)
+        render_fleet_input_section()
+        
+        st.divider()
+        
+        # 2. Kho & Tọa độ ArcGIS (xuất WAREHOUSE_WITH_COORDINATES.xlsx)
+        render_warehouse_input_section()
+        
+        st.divider()
+        
+        # 3. Sản phẩm quy đổi về đơn vị Mét (xuất DIM_PRODUCT.xlsx)
+        render_product_input_section()
+        
+        st.divider()
+        
+        # 4. Đơn hàng & Liên kết Thể tích/Trọng lượng từ Sản phẩm (xuất DIM_ORDERS.xlsx)
+        render_orders_input_section()
 
-    for fld, aliases in fields.items():
-        all_aliases = list(aliases) + [fld]
-        best_col, best_score, best_reason = None, 0.0, ""
+    # ------------------------------------------------------------------------
+    # 🧩 TAB 2: ORDERS SOLVING — PHÂN TÍCH ĐƠN HÀNG (MODULES2)
+    # ------------------------------------------------------------------------
+    with tab_solving:
+        render_orders_solving_tab()
 
-        for col in df.columns:
-            if col in used_cols:
-                continue
-            
-            col_norm = norm_basic(col)
-            
-            # 1. Fuzzy Matching Score (RapidFuzz)
-            fuzzy_score = max(fuzz.token_set_ratio(col_norm, norm_basic(a)) for a in all_aliases) / 100.0
-            
-            # 2. Keyword Match Score
-            keyword_score = float(any(norm_basic(a) in col_norm for a in all_aliases if len(norm_basic(a)) >= 2))
-            
-            # 3. Data Profiling Score (Kiểm tra kiểu dữ liệu thực tế trong cột)
-            prof_score = profile_fn(df[col], fld)
-            
-            # Tổng hợp điểm trọng số: 75% Text Matching + 25% Data Profiling
-            text_score = 0.7 * fuzzy_score + 0.3 * keyword_score
-            total_score = 0.75 * text_score + 0.25 * prof_score
-
-            if total_score > best_score:
-                best_col = col
-                best_score = total_score
-                best_reason = f"Text: {text_score:.0%} | Profile: {prof_score:.0%}"
-
-        if best_col is not None and best_score >= threshold:
-            result[fld] = (best_col, best_score, best_reason)
-            used_cols.add(best_col)
-        else:
-            result[fld] = (None, 0.0, "Không tìm thấy cột phù hợp")
-
-    return result
+if __name__ == "__main__":
+    main()
