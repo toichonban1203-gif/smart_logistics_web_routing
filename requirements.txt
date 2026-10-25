@@ -1,1 +1,8 @@
-
+nicegui
+pandas
+numpy
+openpyxl
+rapidfuzz
+unidecode
+geopy
+requests
