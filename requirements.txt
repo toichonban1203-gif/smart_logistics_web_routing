@@ -6,3 +6,4 @@ rapidfuzz
 unidecode
 geopy
 requests
+streamlit
