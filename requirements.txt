@@ -1,4 +1,4 @@
-nicegui
+streamlit
 pandas
 numpy
 openpyxl
@@ -6,4 +6,4 @@ rapidfuzz
 unidecode
 geopy
 requests
-streamlit
+plotly
