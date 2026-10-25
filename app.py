@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
+import os
+import sys
 import streamlit as st
+
+# Thêm thư mục gốc vào hệ thống để Python nhận diện các thư mục modules & modules2
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
 
 # ============================================================================
 # ⚙️ 1. CẤU HÌNH TRANG STREAMLIT
@@ -14,7 +21,7 @@ st.set_page_config(
 # ============================================================================
 # 📦 2. IMPORT CÁC MODULE ĐÃ HOÀN THÀNH
 # ============================================================================
-# 5 Module nhập liệu Master Data (nằm trong thư mục modules)
+# 4 Module nhập liệu Master Data (nằm trong thư mục modules)
 from modules.fleet_master import render_fleet_input_section
 from modules.warehouse_master import render_warehouse_input_section
 from modules.product_master import render_product_input_section
@@ -41,7 +48,7 @@ def main():
                 del st.session_state[k]
             st.rerun()
 
-    # Chỉ hiển thị đúng 2 Tab đã làm xong
+    # Chỉ hiển thị 2 Tab đã làm xong
     tab_input, tab_solving = st.tabs([
         "📥 1. Nhập Dữ Liệu Khách Hàng",
         "🧩 2. Orders Solving"
