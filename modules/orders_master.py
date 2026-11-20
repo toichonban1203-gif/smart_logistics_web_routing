@@ -21,13 +21,10 @@ except Exception:
 # ============================================================================
 # ⚙️ 1. CẤU HÌNH SCHEMA CHUẨN & FIELD MAPPING CHO ORDERS
 # ============================================================================
-
 ORDER_FIELDS = {
     "ORDER_ID":       ["mã đơn", "order id", "order code", "mã đơn hàng", "id_order", "order_id"],
     "ORDER_DATE":     ["ngày đặt", "order date", "order_date", "ngày tạo đơn"],
     "DELIVERY_DATE":  ["ngày giao", "delivery date", "delivery_date", "ngày cần giao", "ship date"],
-    "LOADING_TIME":   ["thời gian bốc", "loading time", "loading_time", "bốc hàng (phút)"],
-    "UNLOADING_TIME": ["thời gian dỡ", "unloading time", "unloading_time", "dỡ hàng (phút)"],
     "SHIFT":          ["ca", "shift", "kíp", "buổi", "ca giao", "ca làm việc"],
     "CUSTOMER_ID":    ["mã khách", "customer id", "customer_id", "mã kh"],
     "CUSTOMER_NAME":  ["tên khách", "customer name", "customer_name", "tên kh"],
@@ -36,13 +33,11 @@ ORDER_FIELDS = {
     "PRODUCT_ID":     ["mã sản phẩm", "product id", "sku", "mã sp", "product_id"],
     "QUANTITY":       ["số lượng", "qty", "quantity", "units", "sl"]
 }
-
 SHIFT_OPTIONS = ["Ca Sáng", "Ca Chiều", "Ca Đêm"]
 
 # ============================================================================
 # 🛠️ 2. HÀM CHUẨN HÓA & TRA CỨU TÍNH TOÁN THEO SẢN PHẨM
 # ============================================================================
-
 def parse_num(val) -> float:
     if pd.isna(val) or val is None or str(val).strip() == "":
         return 0.0
@@ -75,10 +70,6 @@ def process_order_record(rec: dict, product_lookup: dict) -> dict:
     out["ORDER_DATE"]    = parse_date(rec.get("ORDER_DATE"))
     out["DELIVERY_DATE"] = parse_date(rec.get("DELIVERY_DATE"))
     
-    # Mặc định Loading: 20p, Unloading: 30p nếu không nhập
-    out["LOADING_TIME"]   = parse_num(rec.get("LOADING_TIME")) or 20.0
-    out["UNLOADING_TIME"] = parse_num(rec.get("UNLOADING_TIME")) or 30.0
-    
     # Phân loại Ca giao hàng
     shift_raw = str(rec.get("SHIFT", "")).strip()
     if "chiều" in shift_raw.lower() or "pm" in shift_raw.lower():
@@ -105,10 +96,8 @@ def process_order_record(rec: dict, product_lookup: dict) -> dict:
     
     unit_v = prod_info["volume_m3"]
     unit_w = prod_info["weight_kg"]
-
     out["TOTAL_VOLUME_M3"] = round(unit_v * qty, 4)
     out["TOTAL_WEIGHT_KG"] = round(unit_w * qty, 3)
-
     return out
 
 def validate_orders(df: pd.DataFrame) -> pd.DataFrame:
@@ -137,7 +126,6 @@ def validate_orders(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================================
 # 🖥️ 3. GIAO DIỆN NHẬP DỮ LIỆU ĐƠN HÀNG (ORDERS MASTER DATA)
 # ============================================================================
-
 def render_orders_input_section():
     st.subheader("🧾 4. Nhập Dữ Liệu Đơn Hàng (Orders Master Data)")
     
@@ -152,7 +140,6 @@ def render_orders_input_section():
                     "volume_m3": parse_num(prow.get("VOLUME_M3")),
                     "weight_kg": parse_num(prow.get("WEIGHT_KG"))
                 }
-
     if not product_lookup:
         st.warning("⚠️ *Khuyên dùng: Cậu nên hoàn tất phần 3. Nhập Dữ Liệu Sản Phẩm trước để hệ thống tự động nhân Thể tích & Trọng lượng cho Đơn hàng.*")
 
@@ -160,8 +147,6 @@ def render_orders_input_section():
         "ORDER_ID":       ["ORD_001", "ORD_002", "ORD_003"],
         "ORDER_DATE":     [dt.date.today().strftime("%Y-%m-%d")] * 3,
         "DELIVERY_DATE":  [dt.date.today().strftime("%Y-%m-%d")] * 3,
-        "LOADING_TIME":   [20, 15, 30],
-        "UNLOADING_TIME": [30, 25, 45],
         "SHIFT":          ["Ca Sáng", "Ca Chiều", "Ca Sáng"],
         "CUSTOMER_ID":    ["CUST_01", "CUST_02", "CUST_03"],
         "CUSTOMER_NAME":  ["Công ty A", "Nguyễn Văn B", "Trần Văn C"],
@@ -172,7 +157,6 @@ def render_orders_input_section():
     })
 
     do_geocode = st.checkbox("🌍 Tự động quét ArcGIS Geocoding cho địa chỉ điểm giao đơn hàng", value=True, key="ord_do_geo")
-
     mode = st.radio(
         "Phương thức nhập dữ liệu Đơn hàng:",
         ["✍️ Nhập trực tiếp (Data Editor)", "📂 Upload file Excel/CSV/JSON"],
@@ -181,7 +165,6 @@ def render_orders_input_section():
     )
 
     raw_df = None
-
     if mode == "✍️ Nhập trực tiếp (Data Editor)":
         st.markdown("##### 📝 Chỉnh sửa đơn hàng trực tiếp:")
         raw_df = st.data_editor(
@@ -216,10 +199,8 @@ def render_orders_input_section():
         st.divider()
         st.markdown("### 🔍 Quét & Ánh Xạ Cột Đơn Hàng Chuẩn Hóa")
         st.info("💡 Hệ thống tự động ghép cột. Cậu có thể điều chỉnh lại các cột tương ứng.")
-
         input_cols = ["-- Bỏ qua / Không sử dụng --"] + [str(c) for c in raw_df.columns]
         chosen_mapping = {}
-
         cols_ui = st.columns(3)
         for i, (target_field, aliases) in enumerate(ORDER_FIELDS.items()):
             best_match = "-- Bỏ qua / Không sử dụng --"
@@ -229,7 +210,6 @@ def render_orders_input_section():
                 if score > best_score and score > 40:
                     best_score = score
                     best_match = str(col)
-
             with cols_ui[i % 3]:
                 chosen_mapping[target_field] = st.selectbox(
                     f"Cột chuẩn `{target_field}` gán từ:",
@@ -246,7 +226,6 @@ def render_orders_input_section():
             processed_rows = []
             progress_bar = st.progress(0.0)
             status_text = st.empty()
-
             total_rows = len(raw_df)
             for idx, (_, row) in enumerate(raw_df.iterrows()):
                 rec = {}
@@ -262,7 +241,6 @@ def render_orders_input_section():
                 # Quét ArcGIS Geocoding địa chỉ khách
                 cleaned_loc = clean_address(p_rec["LOCATION"])
                 lat, lng, geo_status = None, None, "— Chưa quét"
-
                 if do_geocode and cleaned_loc:
                     status_text.text(f"🌍 Đang geocode đơn hàng [{idx+1}/{total_rows}]: {cleaned_loc}...")
                     geo_res = geocode_address(cleaned_loc)
@@ -294,7 +272,7 @@ def render_orders_input_section():
             column_order=[
                 "ORDER_ID", "ORDER_DATE", "DELIVERY_DATE", "SHIFT", "CUSTOMER_ID", "CUSTOMER_NAME", 
                 "TYPE", "LOCATION", "PRODUCT_ID", "QUANTITY", "TOTAL_VOLUME_M3", "TOTAL_WEIGHT_KG", 
-                "LOADING_TIME", "UNLOADING_TIME", "LAT", "LNG", "TRẠNG_THÁI_GEOCODE", "KIỂM_TRA"
+                "LAT", "LNG", "TRẠNG_THÁI_GEOCODE", "KIỂM_TRA"
             ],
             key="ord_final_editor"
         )
@@ -303,12 +281,10 @@ def render_orders_input_section():
         out_dir = "output_orders"
         os.makedirs(out_dir, exist_ok=True)
         xlsx_path = os.path.join(out_dir, "DIM_ORDERS.xlsx")
-
         with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
             edited_final_df.drop(columns=["KIỂM_TRA", "TRẠNG_THÁI_GEOCODE"], errors="ignore").to_excel(
                 writer, sheet_name="DIM_ORDERS", index=False
             )
-
         with open(xlsx_path, "rb") as f:
             st.download_button(
                 label="⬇️ Tải file chốt DIM_ORDERS.xlsx",
