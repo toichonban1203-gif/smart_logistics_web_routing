@@ -92,6 +92,14 @@ def validate_traffic(df: pd.DataFrame) -> pd.DataFrame:
     out["KIỂM_TRA"] = msgs
     return out
 
+def suggest_base_speed(weight_kg: float) -> float:
+    """Gợi ý vận tốc cơ sở (km/h) dựa trên tải trọng xe"""
+    if weight_kg <= 1500:
+        return 40.0
+    elif weight_kg <= 3500:
+        return 35.0
+    return 30.0
+
 # ============================================================================
 # ⚙️ 3. KHỞI TẠO GIÁ TRỊ MẶC ĐỊNH TRONG SESSION STATE
 # ============================================================================
@@ -119,7 +127,7 @@ def init_pre_routing_state():
 def render_pre_routing_tab():
     init_pre_routing_state()
     st.header("⚙️ Tab 3: Pre-Routing — Quy Định Vận Tải & Tham Số Đầu Vào")
-    st.caption("🛠️ *Thiết lập các quy định về hàng hóa, ca làm việc, thời điểm kiểm tra xe và hệ số tắc đường trước khi định tuyến.*")
+    st.caption("🛠️ *Thiết lập các quy định về hàng hóa, ca làm việc, thời điểm kiểm tra xe, hệ số tắc đường và vận tốc cơ sở trước khi định tuyến.*")
     st.divider()
 
     # ------------------------------------------------------------------------
@@ -301,7 +309,6 @@ def render_pre_routing_tab():
 
         df_tf = st.session_state["traffic_final_df"]
 
-        # KPI Cards tổng quan nhanh
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("📍 Tổng Số Phường", f"{df_tf['WARD'].nunique()} phường")
         k2.metric("📋 Tổng Bản Ghi", f"{len(df_tf)} dòng")
@@ -310,7 +317,6 @@ def render_pre_routing_tab():
         k3.metric("🔥 Hệ Số Cao Nhất", f"{max_tf:.2f}x")
         k4.metric("⚖️ Hệ Số Trung Bình", f"{avg_tf:.2f}x")
 
-        # Bảng hiển thị có emoji & cho phép tinh chỉnh lần cuối
         edited_tf_df = st.data_editor(
             df_tf,
             num_rows="dynamic",
@@ -329,13 +335,11 @@ def render_pre_routing_tab():
             key="traffic_final_editor"
         )
 
-        # Xuất file Excel DIM_TRAFFIC_FACTOR.xlsx
         out_dir = "output_pre_routing"
         os.makedirs(out_dir, exist_ok=True)
         xlsx_path = os.path.join(out_dir, "DIM_TRAFFIC_FACTOR.xlsx")
 
         export_df = edited_tf_df.drop(columns=["KIỂM_TRA"], errors="ignore").copy()
-        # Làm sạch emoji khi xuất ra file Excel chuẩn để thuật toán dễ đọc
         export_df["ZONE"] = export_df["ZONE"].str.replace(r"^[^\wÀ-ỹ]+\s*", "", regex=True)
 
         with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
@@ -352,6 +356,83 @@ def render_pre_routing_tab():
     else:
         export_df = pd.DataFrame()
 
+    st.divider()
+
+    # ------------------------------------------------------------------------
+    # 🏎️ PHẦN 5: THIẾT LẬP VẬN TỐC CƠ SỞ TỪ OUTPUT POOL XE (TAB 1)
+    # ------------------------------------------------------------------------
+    st.markdown("### 🏎️ 5. Thiết Lập Vận Tốc Cơ Sở Theo Hạm Đội Xe (Từ Tab 1)")
+    st.caption("🚚 *Hệ thống tự động kéo danh sách xe từ **Tab 1 (Fleet Master)** để cấu hình vận tốc di chuyển tiêu chuẩn (km/h) trước khi nhân hệ số tắc đường.*")
+
+    if "fleet_final_df" in st.session_state and not st.session_state["fleet_final_df"].empty:
+        pool_df = st.session_state["fleet_final_df"].copy()
+        st.success(f"✅ Đã đồng bộ **{len(pool_df)} xe** từ hạm đội xe Tab 1.")
+    else:
+        st.warning("⚠️ Chưa tìm thấy dữ liệu hạm đội xe từ **Tab 1 (Fleet Master)**. Đang hiển thị danh sách xe mẫu để cấu hình tạm.")
+        pool_df = pd.DataFrame({
+            "ID_VEHICLE":    ["VEH_01", "VEH_02", "VEH_03"],
+            "TRUCK":         ["Xe 1.25 Tấn", "Xe 2.5 Tấn", "Xe 5 Tấn"],
+            "MAX_WEIGHT_KG": [1250.0, 2500.0, 5000.0],
+            "MAX_VOLUME_M3": [8.0, 15.0, 24.0]
+        })
+
+    # Chuẩn bị bảng cấu hình vận tốc cơ sở
+    speed_rows = []
+    for _, row in pool_df.iterrows():
+        vid = str(row.get("ID_VEHICLE", "")).strip()
+        if not vid:
+            continue
+        w_kg = pd.to_numeric(row.get("MAX_WEIGHT_KG", 0), errors="coerce") or 0.0
+        v_m3 = pd.to_numeric(row.get("MAX_VOLUME_M3", 0), errors="coerce") or 0.0
+        speed_rows.append({
+            "ID_VEHICLE":      vid,
+            "TRUCK":           str(row.get("TRUCK", "Xe tải tiêu chuẩn")).strip(),
+            "MAX_WEIGHT_KG":   float(w_kg),
+            "MAX_VOLUME_M3":   float(v_m3),
+            "BASE_SPEED_KMH":  suggest_base_speed(float(w_kg))
+        })
+
+    df_speed_init = pd.DataFrame(speed_rows)
+
+    edited_speed_df = st.data_editor(
+        df_speed_init,
+        num_rows="fixed",
+        use_container_width=True,
+        disabled=["ID_VEHICLE", "TRUCK", "MAX_WEIGHT_KG", "MAX_VOLUME_M3"],
+        column_config={
+            "ID_VEHICLE":     st.column_config.TextColumn("🆔 Mã Xe"),
+            "TRUCK":          st.column_config.TextColumn("🚚 Loại Xe"),
+            "MAX_WEIGHT_KG":  st.column_config.NumberColumn("⚖️ Trọng Tải (kg)", format="%.1f"),
+            "MAX_VOLUME_M3":  st.column_config.NumberColumn("📦 Thể Tích (m³)", format="%.2f"),
+            "BASE_SPEED_KMH": st.column_config.NumberColumn(
+                "⚡ Vận Tốc Cơ Sở (km/h)",
+                min_value=5.0,
+                max_value=120.0,
+                step=1.0,
+                format="%.1f",
+                required=True,
+                help="Vận tốc trung bình trong điều kiện giao thông thông thoáng (hệ số tắc đường = 1.0)"
+            )
+        },
+        key="fleet_base_speed_editor"
+    )
+
+    # Xuất file Excel vận tốc cơ sở nếu cần
+    out_dir = "output_pre_routing"
+    os.makedirs(out_dir, exist_ok=True)
+    speed_xlsx_path = os.path.join(out_dir, "DIM_VEHICLE_SPEED.xlsx")
+    with pd.ExcelWriter(speed_xlsx_path, engine="openpyxl") as writer:
+        edited_speed_df.to_excel(writer, sheet_name="DIM_VEHICLE_SPEED", index=False)
+
+    with open(speed_xlsx_path, "rb") as f:
+        st.download_button(
+            label="⬇️ Tải bảng vận tốc cơ sở xe (DIM_VEHICLE_SPEED.xlsx)",
+            data=f,
+            file_name="DIM_VEHICLE_SPEED.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_dim_vehicle_speed"
+        )
+
     # ------------------------------------------------------------------------
     # 🔑 ĐÓNG GÓI LƯU CẤU HÌNH VÀO SESSION STATE CỦA HỆ THỐNG
     # ------------------------------------------------------------------------
@@ -359,7 +440,8 @@ def render_pre_routing_tab():
         "constraint_mode": constraint_mode,
         "shifts": shifts_data,
         "split_time": split_time,
-        "traffic_table": export_df.to_dict(orient="records") if not export_df.empty else []
+        "traffic_table": export_df.to_dict(orient="records") if not export_df.empty else [],
+        "fleet_base_speeds": edited_speed_df.to_dict(orient="records") if not edited_speed_df.empty else []
     }
     st.divider()
-    st.success("✅ Toàn bộ cấu hình Pre-Routing & Bảng hệ số tắc đường đã được lưu vào hệ thống!")
+    st.success("✅ Toàn bộ cấu hình Pre-Routing, Hệ số tắc đường & Vận tốc cơ sở đã được lưu vào hệ thống!")
