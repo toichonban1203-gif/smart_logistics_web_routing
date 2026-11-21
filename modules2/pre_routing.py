@@ -11,10 +11,10 @@ TRAFFIC_FIELDS = {
     "WARD":         ["phường", "xã", "phường/xã", "ward", "commune", "địa bàn", "tên phường"],
     "ZONE":         ["khu vực", "vùng", "zone", "area", "loại khu vực", "phân vùng"],
     "DAY_OF_WEEK":  ["thứ", "ngày", "ngày trong tuần", "day", "day of week", "weekday", "thứ trong tuần"],
-    "CA_SOM":       ["ca sớm", "sáng sớm", "early", "morning", "ca_som", "hệ số ca sớm"],
-    "CA_TRUA":      ["ca trưa", "buổi trưa", "noon", "midday", "ca_trua", "hệ số ca trưa"],
-    "CA_CHIEU":     ["ca chiều", "buổi chiều", "afternoon", "ca_chieu", "hệ số ca chiều"],
-    "CA_CHAP_TOI":  ["ca chập tối", "chập tối", "chiều tối", "tối", "evening", "dusk", "ca_chap_toi", "hệ số ca chập tối"]
+    "CA_SOM":       ["ca sớm", "sáng sớm", "ca 1", "early", "morning", "ca_som", "hệ số ca sớm"],
+    "CA_TRUA":      ["ca trưa", "buổi trưa", "ca 2", "noon", "midday", "ca_trua", "hệ số ca trưa"],
+    "CA_CHIEU":     ["ca chiều", "buổi chiều", "ca 3", "afternoon", "ca_chieu", "hệ số ca chiều"],
+    "CA_CHAP_TOI":  ["ca chập tối", "chập tối", "chiều tối", "tối", "ca 4", "evening", "dusk", "ca_chap_toi", "hệ số ca chập tối"]
 }
 
 ZONE_OPTIONS = [
@@ -29,8 +29,95 @@ DAY_OPTIONS = [
 ]
 
 # ============================================================================
-# 🛠️ 2. HÀM CHUẨN HÓA & VALIDATE DỮ LIỆU TẮC ĐƯỜNG
+# 🛠️ 2. HÀM ĐỌC MA TRẬN EXCEL 2 TẦNG & CHUẨN HÓA DỮ LIỆU TẮC ĐƯỜNG
 # ============================================================================
+def parse_traffic_excel_smart(uploaded_file) -> pd.DataFrame:
+    """
+    Tự động nhận diện và đọc cả 2 định dạng file Excel:
+    - Dạng ma trận rộng 2 tầng header (Thứ gộp ô trên Ca 1..4 như sheet DIM_AREA)
+    - Dạng bảng phẳng 1 tầng header thông thường
+    """
+    xl = pd.ExcelFile(uploaded_file)
+    target_sheet = "DIM_AREA" if "DIM_AREA" in xl.sheet_names else xl.sheet_names[0]
+
+    # Đọc thử 3 dòng đầu không header để kiểm tra cấu trúc Merged Cells
+    preview = pd.read_excel(xl, sheet_name=target_sheet, header=None, nrows=3)
+    if len(preview) < 2:
+        return pd.read_excel(xl, sheet_name=target_sheet)
+
+    row0_str = " ".join(preview.iloc[0].dropna().astype(str)).lower()
+    row1_str = " ".join(preview.iloc[1].dropna().astype(str)).lower()
+
+    is_matrix_2_rows = ("thứ" in row0_str or "thu" in row0_str) and ("ca 1" in row1_str or "ca 2" in row1_str)
+
+    if not is_matrix_2_rows:
+        return pd.read_excel(xl, sheet_name=target_sheet)
+
+    # Đọc toàn bộ sheet không header để xử lý gộp ô
+    raw = pd.read_excel(xl, sheet_name=target_sheet, header=None)
+    top_header = raw.iloc[0].ffill().fillna("").astype(str).str.strip()
+    sub_header = raw.iloc[1].fillna("").astype(str).str.strip()
+    data_body = raw.iloc[2:].copy().reset_index(drop=True)
+
+    # Tìm vị trí cột Tên Phường và Area
+    ward_col_idx, area_col_idx = None, None
+    for idx in range(len(sub_header)):
+        h_combined = f"{top_header[idx]} {sub_header[idx]}".lower()
+        if "phường" in h_combined or "ward" in h_combined:
+            ward_col_idx = idx
+        elif "area" in h_combined or "khu vực" in h_combined:
+            area_col_idx = idx
+
+    # Nhóm các cột dữ liệu theo từng Thứ (Thứ 2 -> Chủ Nhật)
+    day_groups = {}
+    for idx in range(len(sub_header)):
+        day_label = top_header[idx]
+        shift_label = sub_header[idx].lower()
+
+        if not any(k in day_label.lower() for k in ["thứ", "thu", "chủ nhật", "cn"]):
+            continue
+
+        d_norm = "Chủ Nhật"
+        for d_num in ["2", "3", "4", "5", "6", "7"]:
+            if d_num in day_label:
+                d_norm = f"Thứ {d_num}"
+                break
+
+        shift_key = None
+        if "1" in shift_label or "sớm" in shift_label:
+            shift_key = "CA_SOM"
+        elif "2" in shift_label or "trưa" in shift_label:
+            shift_key = "CA_TRUA"
+        elif "3" in shift_label or "chiều" in shift_label:
+            shift_key = "CA_CHIEU"
+        elif "4" in shift_label or "tối" in shift_label:
+            shift_key = "CA_CHAP_TOI"
+
+        if shift_key:
+            day_groups.setdefault(d_norm, {})[shift_key] = idx
+
+    # Xoay ma trận rộng thành bảng chuẩn dọc
+    normalized_rows = []
+    for _, r in data_body.iterrows():
+        ward_val = str(r[ward_col_idx]).strip() if ward_col_idx is not None and pd.notna(r[ward_col_idx]) else ""
+        if not ward_val or ward_val.lower() == "nan":
+            continue
+
+        area_val = str(r[area_col_idx]).strip() if area_col_idx is not None and pd.notna(r[area_col_idx]) else "Đô Thị Lõi"
+
+        for day_name, shift_cols in day_groups.items():
+            normalized_rows.append({
+                "Tên Phường":  ward_val,
+                "Area":        area_val,
+                "Thứ":         day_name,
+                "Ca Sớm":      r[shift_cols["CA_SOM"]] if "CA_SOM" in shift_cols else 1.0,
+                "Ca Trưa":     r[shift_cols["CA_TRUA"]] if "CA_TRUA" in shift_cols else 1.0,
+                "Ca Chiều":    r[shift_cols["CA_CHIEU"]] if "CA_CHIEU" in shift_cols else 1.0,
+                "Ca Chập Tối": r[shift_cols["CA_CHAP_TOI"]] if "CA_CHAP_TOI" in shift_cols else 1.0,
+            })
+
+    return pd.DataFrame(normalized_rows)
+
 def parse_factor(val) -> float:
     if pd.isna(val) or val is None or str(val).strip() == "":
         return 1.0
@@ -193,16 +280,16 @@ def render_pre_routing_tab():
     # 🚦 PHẦN 4: HỆ SỐ TẮC ĐƯỜNG THEO PHƯỜNG, KHU VỰC, 4 CA & 7 NGÀY (IMPORT + MAPPING)
     # ------------------------------------------------------------------------
     st.markdown("### 🚦 4. Bảng Hệ Số Tắc Đường Theo Phường, Khu Vực & Khung Ca")
-    st.caption("📍 *Hỗ trợ đẩy file Excel/CSV/JSON và tự động quét ánh xạ theo Phường, 4 nhóm Khu vực, 4 Ca trong ngày và 7 Ngày trong tuần.*")
+    st.caption("📍 *Hỗ trợ đẩy file ma trận Excel (tự động nhận diện sheet `DIM_AREA` & header 2 tầng) hoặc nhập trực tiếp.*")
 
     seed_traffic = pd.DataFrame({
-        "WARD":        ["Phường Tràng Tiền", "Phường Dịch Vọng", "Phường Dương Nội", "Xã Đông Anh"],
+        "WARD":        ["Hoàn Kiếm", "Vĩnh Tuy", "Dương Nội", "Đông Anh"],
         "ZONE":        ["🏙️ Nội đô", "🛣️ Gần trục đường lớn", "🏘️ Đô thị vệ tinh", "🌾 Ngoại thành"],
         "DAY_OF_WEEK": ["Thứ 2", "Thứ 2", "Thứ 6", "Chủ Nhật"],
-        "CA_SOM":      [1.85, 1.60, 1.30, 1.10],
-        "CA_TRUA":     [1.35, 1.25, 1.10, 1.05],
-        "CA_CHIEU":    [1.65, 1.50, 1.25, 1.10],
-        "CA_CHAP_TOI": [2.10, 1.80, 1.45, 1.15]
+        "CA_SOM":      [2.20, 4.00, 1.30, 1.10],
+        "CA_TRUA":     [1.60, 2.80, 1.10, 1.05],
+        "CA_CHIEU":    [1.50, 2.40, 1.25, 1.10],
+        "CA_CHAP_TOI": [1.80, 3.20, 1.45, 1.15]
     })
 
     mode = st.radio(
@@ -222,10 +309,10 @@ def render_pre_routing_tab():
                 "WARD":        st.column_config.TextColumn("📍 Phường / Xã", required=True),
                 "ZONE":        st.column_config.SelectboxColumn("🗺️ Khu vực", options=ZONE_OPTIONS, required=True),
                 "DAY_OF_WEEK": st.column_config.SelectboxColumn("📅 Ngày trong tuần", options=DAY_OPTIONS, required=True),
-                "CA_SOM":      st.column_config.NumberColumn("🌅 Ca Sớm", min_value=1.0, max_value=5.0, step=0.05),
-                "CA_TRUA":     st.column_config.NumberColumn("☀️ Ca Trưa", min_value=1.0, max_value=5.0, step=0.05),
-                "CA_CHIEU":    st.column_config.NumberColumn("🌤️ Ca Chiều", min_value=1.0, max_value=5.0, step=0.05),
-                "CA_CHAP_TOI": st.column_config.NumberColumn("🌆 Ca Chập Tối", min_value=1.0, max_value=5.0, step=0.05),
+                "CA_SOM":      st.column_config.NumberColumn("🌅 Ca Sớm", min_value=1.0, max_value=10.0, step=0.05),
+                "CA_TRUA":     st.column_config.NumberColumn("☀️ Ca Trưa", min_value=1.0, max_value=10.0, step=0.05),
+                "CA_CHIEU":    st.column_config.NumberColumn("🌤️ Ca Chiều", min_value=1.0, max_value=10.0, step=0.05),
+                "CA_CHAP_TOI": st.column_config.NumberColumn("🌆 Ca Chập Tối", min_value=1.0, max_value=10.0, step=0.05),
             },
             key="traffic_editor"
         )
@@ -243,8 +330,8 @@ def render_pre_routing_tab():
                 elif uploaded_file.name.endswith(".json"):
                     raw_df = pd.read_json(uploaded_file)
                 else:
-                    raw_df = pd.read_excel(uploaded_file)
-                st.caption(f"📄 Tìm thấy `{len(raw_df)}` dòng dữ liệu tắc đường từ file.")
+                    raw_df = parse_traffic_excel_smart(uploaded_file)
+                st.caption(f"📄 Đã trích xuất thành công `{len(raw_df)}` dòng dữ liệu tắc đường chuẩn hóa từ file.")
             except Exception as e:
                 st.error(f"❌ Lỗi đọc file: {e}")
 
@@ -376,7 +463,6 @@ def render_pre_routing_tab():
             "MAX_VOLUME_M3": [8.0, 15.0, 24.0]
         })
 
-    # Chuẩn bị bảng cấu hình vận tốc cơ sở
     speed_rows = []
     for _, row in pool_df.iterrows():
         vid = str(row.get("ID_VEHICLE", "")).strip()
@@ -417,7 +503,6 @@ def render_pre_routing_tab():
         key="fleet_base_speed_editor"
     )
 
-    # Xuất file Excel vận tốc cơ sở nếu cần
     out_dir = "output_pre_routing"
     os.makedirs(out_dir, exist_ok=True)
     speed_xlsx_path = os.path.join(out_dir, "DIM_VEHICLE_SPEED.xlsx")
