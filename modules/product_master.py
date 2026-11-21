@@ -5,7 +5,7 @@ import json
 import pandas as pd
 import streamlit as st
 from rapidfuzz import fuzz
-
+from modules.common_utils import parse_num
 # ============================================================================
 # ⚙️ 1. CẤU HÌNH SCHEMA CHUẨN & FIELD MAPPING CHO PRODUCT
 # ============================================================================
@@ -18,42 +18,28 @@ PRODUCT_FIELDS_CUBE = {
     "WEIGHT_KG":  ["trọng lượng", "weight", "kg", "khối lượng", "weight_kg", "trọng lượng kg"],
     "VOLUME_M3":  ["thể tích", "volume", "m3", "cbm", "max volume", "volume_m3", "thể tích m3"]
 }
-
 PRODUCT_FIELDS_WEIGHT = {
     "ID_PRODUCT": ["mã sản phẩm", "product id", "sku", "item code", "mã sp", "code", "id_product", "id product"],
     "PRODUCT":    ["tên sản phẩm", "product name", "item name", "tên sp", "name", "product", "sản phẩm"],
     "VOLUME_M3":  ["thể tích nén", "thể tích", "volume", "m3", "cbm", "volume_m3", "thể tích m3", "compressed volume"],
     "WEIGHT_KG":  ["trọng lượng", "weight", "kg", "khối lượng", "weight_kg", "trọng lượng kg"]
 }
-
 # ============================================================================
 # 🛠️ 2. HÀM CHUẨN HÓA & TÍNH TOÁN THỂ TÍCH TỰ ĐỘNG
 # ============================================================================
-def parse_num(val) -> float:
-    if pd.isna(val) or val is None or str(val).strip() == "":
-        return 0.0
-    try:
-        cleaned = pd.Series([str(val)]).str.replace(r"[^\d.-]", "", regex=True).iloc[0]
-        return float(cleaned) if cleaned else 0.0
-    except Exception:
-        return 0.0
-
 def process_product_record(rec: dict, is_cube_out: bool) -> dict:
     out = {}
     out["ID_PRODUCT"] = str(rec.get("ID_PRODUCT", "")).strip() if rec.get("ID_PRODUCT") else ""
     out["PRODUCT"]    = str(rec.get("PRODUCT", "")).strip() if rec.get("PRODUCT") else "Sản phẩm chưa đặt tên"
     out["CARGO_TYPE"] = "Cube Out" if is_cube_out else "Weight Out"
     out["WEIGHT_KG"]  = round(parse_num(rec.get("WEIGHT_KG")), 3)
-
     if is_cube_out:
         length_m = parse_num(rec.get("LENGTH"))
         width_m  = parse_num(rec.get("WIDTH"))
         height_m = parse_num(rec.get("HEIGHT"))
-
         out["LENGTH"] = round(length_m, 3)
         out["WIDTH"]  = round(width_m, 3)
         out["HEIGHT"] = round(height_m, 3)
-
         # Ưu tiên tính Dài x Rộng x Cao; nếu người dùng có nhập sẵn VOLUME_M3 thì lấy theo input
         vol_input = parse_num(rec.get("VOLUME_M3"))
         if length_m > 0 and width_m > 0 and height_m > 0:
@@ -66,14 +52,11 @@ def process_product_record(rec: dict, is_cube_out: bool) -> dict:
         out["WIDTH"]     = 0.0
         out["HEIGHT"]    = 0.0
         out["VOLUME_M3"] = round(parse_num(rec.get("VOLUME_M3")), 4)
-
     return out
-
 def validate_product(df: pd.DataFrame, is_cube_out: bool) -> pd.DataFrame:
     out = df.copy()
     dup_id = out["ID_PRODUCT"].astype(str).duplicated(keep=False)
     msgs = []
-
     for i, row in out.iterrows():
         errs = []
         if not str(row.get("ID_PRODUCT", "")).strip():
@@ -82,7 +65,6 @@ def validate_product(df: pd.DataFrame, is_cube_out: bool) -> pd.DataFrame:
             errs.append("Trùng ID_PRODUCT")
         if row.get("WEIGHT_KG", 0) <= 0:
             errs.append("WEIGHT_KG phải > 0")
-
         if is_cube_out:
             if row.get("LENGTH", 0) <= 0 or row.get("WIDTH", 0) <= 0 or row.get("HEIGHT", 0) <= 0:
                 errs.append("Cube Out bắt buộc đủ Dài, Rộng, Cao > 0")
@@ -91,18 +73,14 @@ def validate_product(df: pd.DataFrame, is_cube_out: bool) -> pd.DataFrame:
         else:
             if row.get("VOLUME_M3", 0) <= 0:
                 errs.append("Weight Out bắt buộc Thể tích nén (VOLUME_M3) > 0")
-
         msgs.append("❌ " + "; ".join(errs) if errs else "✅ Hợp lệ")
-
     out["KIỂM_TRA"] = msgs
     return out
-
 # ============================================================================
 # 🖥️ 3. GIAO DIỆN NHẬP DỮ LIỆU SẢN PHẨM (PRODUCT MASTER DATA)
 # ============================================================================
 def render_product_input_section():
     st.subheader("📦 3. Nhập Dữ Liệu Sản Phẩm (Product Master Data)")
-
     # Dropdown chọn đặc tính lô hàng
     cargo_mode = st.selectbox(
         "⚖️ Chọn đặc tính nhóm hàng hóa (Tối ưu xếp dỡ):",
@@ -113,7 +91,6 @@ def render_product_input_section():
         key="prod_cargo_type"
     )
     is_cube_out = "Cube Out" in cargo_mode
-
     if is_cube_out:
         st.caption("📏 *Chế độ Cube Out: Hệ thống yêu cầu đủ 3 kích thước Dài, Rộng, Cao (đơn vị Mét) để tính thể tích chiếm chỗ.*")
         seed_product = pd.DataFrame({
@@ -144,14 +121,12 @@ def render_product_input_section():
             "WEIGHT_KG": st.column_config.NumberColumn("Trọng lượng 1 Unit (kg)*", min_value=0.0, step=0.1, required=True)
         }
         active_fields = PRODUCT_FIELDS_WEIGHT
-
     mode = st.radio(
         "Phương thức nhập dữ liệu Sản phẩm:",
         ["✍️ Nhập trực tiếp (Data Editor)", "📂 Upload file Excel/CSV/JSON"],
         horizontal=True,
         key="prod_input_mode"
     )
-
     raw_df = None
     if mode == "✍️ Nhập trực tiếp (Data Editor)":
         st.markdown("##### 📝 Chỉnh sửa thông tin sản phẩm trực tiếp:")
@@ -175,7 +150,6 @@ def render_product_input_section():
                 st.caption(f"📄 Tìm thấy `{len(raw_df)}` dòng dữ liệu sản phẩm từ file.")
             except Exception as e:
                 st.error(f"❌ Lỗi đọc file: {e}")
-
     # ============================================================================
     # 🔍 ÁNH XẠ CỘT SEMANTIC MAPPING THEO CHẾ ĐỘ ĐÃ CHỌN
     # ============================================================================
@@ -186,11 +160,9 @@ def render_product_input_section():
             st.info("💡 Đang quét ở chế độ **Cube Out**: Vui lòng đảm bảo khớp đủ 3 cột `LENGTH`, `WIDTH`, `HEIGHT` (đơn vị Mét).")
         else:
             st.info("💡 Đang quét ở chế độ **Weight Out**: Chỉ cần khớp `VOLUME_M3` (thể tích nén) và `WEIGHT_KG` (khối lượng).")
-
         input_cols = ["-- Bỏ qua / Không sử dụng --"] + [str(c) for c in raw_df.columns]
         chosen_mapping = {}
         cols_ui = st.columns(3)
-
         for i, (target_field, aliases) in enumerate(active_fields.items()):
             best_match = "-- Bỏ qua / Không sử dụng --"
             best_score = 0
@@ -206,7 +178,6 @@ def render_product_input_section():
                     index=input_cols.index(best_match) if best_match in input_cols else 0,
                     key=f"select_map_prod_{'cube' if is_cube_out else 'weight'}_{target_field}"
                 )
-
         # ============================================================================
         # 🚀 CHUẨN HÓA & TÍNH THỂ TÍCH M3
         # ============================================================================
@@ -224,27 +195,23 @@ def render_product_input_section():
             final_df = validate_product(pd.DataFrame(processed_rows), is_cube_out=is_cube_out)
             st.session_state["prod_final_df"] = final_df
             st.session_state["prod_is_cube"] = is_cube_out
-
     # ============================================================================
     # 📋 BẢNG OUTPUT SẢN PHẨM & NÚT TẢI DIM_PRODUCT.XLSX
     # ============================================================================
     if "prod_final_df" in st.session_state:
         st.markdown("### 📋 Danh Sách Sản Phẩm Đã Chuẩn Hóa (Cho phép kiểm tra & sửa lại số liệu)")
         saved_is_cube = st.session_state.get("prod_is_cube", True)
-
         display_cols = (
             ["ID_PRODUCT", "PRODUCT", "CARGO_TYPE", "LENGTH", "WIDTH", "HEIGHT", "VOLUME_M3", "WEIGHT_KG", "KIỂM_TRA"]
             if saved_is_cube
             else ["ID_PRODUCT", "PRODUCT", "CARGO_TYPE", "VOLUME_M3", "WEIGHT_KG", "KIỂM_TRA"]
         )
-
         edited_final_df = st.data_editor(
             st.session_state["prod_final_df"],
             num_rows="dynamic",
             column_order=display_cols,
             key="prod_final_editor"
         )
-
         # Xuất file DIM_PRODUCT.xlsx (Giữ nguyên schema chuẩn đầy đủ cột để đồng bộ với các module sau)
         out_dir = "output_product"
         os.makedirs(out_dir, exist_ok=True)
