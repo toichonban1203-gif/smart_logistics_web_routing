@@ -5,11 +5,10 @@ import json
 import pandas as pd
 import streamlit as st
 from rapidfuzz import fuzz
-
+from modules.common_utils import parse_num
 # ============================================================================
 # ⚙️ 1. CẤU HÌNH SCHEMA CHUẨN & FIELD MAPPING CHO FLEET
 # ============================================================================
-
 LICENSE_RANKS = {
     "A1": 1, "A2": 2, "A3": 3, "A4": 4,
     "B1": 5, "B2": 6, "C": 7,
@@ -17,7 +16,6 @@ LICENSE_RANKS = {
     "FB2": 10, "FC": 11, "FD": 12, "FE": 13
 }
 LICENSE_LIST = list(LICENSE_RANKS.keys())
-
 VEHICLE_FIELDS = {
     "ID_VEHICLE":     ["mã xe", "vehicle id", "vehicle code", "vehicle", "xe", "id xe", "truck id", "id_vehicle"],
     "TRUCK":          ["loại xe", "truck type", "truck", "nhóm xe", "tên xe", "vehicle type"],
@@ -28,39 +26,23 @@ VEHICLE_FIELDS = {
     "MAX_DISTANCE":   ["khoảng cách tối đa", "max distance", "quãng đường tối đa", "km tối đa", "max km", "max_distance"],
     "LICENSE":        ["bằng lái", "giấy phép lái xe", "bằng", "license", "loại bằng", "gplx", "min license"]
 }
-
 VEHICLE_NUMERIC = ["MAX_WEIGHT_KG", "MAX_VOLUME_M3", "FIXED_COST", "VARIABLE_COST", "MAX_DISTANCE"]
-
 # ============================================================================
 # 🛠️ 2. HÀM XỬ LÝ & VALIDATE DỮ LIỆU
 # ============================================================================
-
-def parse_num(val) -> float:
-    if pd.isna(val) or val is None or str(val).strip() == "":
-        return 0.0
-    try:
-        cleaned = pd.Series([str(val)]).str.replace(r"[^\d.-]", "", regex=True).iloc[0]
-        return float(cleaned) if cleaned else 0.0
-    except Exception:
-        return 0.0
-
 def process_fleet_record(rec: dict) -> dict:
     out = {}
     out["ID_VEHICLE"] = str(rec.get("ID_VEHICLE", "")).strip() if rec.get("ID_VEHICLE") else ""
     out["TRUCK"]      = str(rec.get("TRUCK", "")).strip() if rec.get("TRUCK") else "Xe tải tiêu chuẩn"
-    
     for f in VEHICLE_NUMERIC:
         out[f] = parse_num(rec.get(f))
-        
     lic_raw = str(rec.get("LICENSE", "")).strip().upper()
     out["LICENSE"] = lic_raw if lic_raw in LICENSE_RANKS else "C"
     return out
-
 def validate_fleet(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     dup_id = out["ID_VEHICLE"].astype(str).duplicated(keep=False)
     msgs = []
-    
     for i, row in out.iterrows():
         errs = []
         if not str(row.get("ID_VEHICLE", "")).strip():
@@ -71,19 +53,14 @@ def validate_fleet(df: pd.DataFrame) -> pd.DataFrame:
             errs.append("MAX_WEIGHT_KG phải > 0")
         if row.get("MAX_VOLUME_M3", 0) <= 0:
             errs.append("MAX_VOLUME_M3 phải > 0")
-            
         msgs.append("❌ " + "; ".join(errs) if errs else "✅ Hợp lệ")
-        
     out["KIỂM_TRA"] = msgs
     return out
-
 # ============================================================================
 # 🖥️ 3. GIAO DIỆN NHẬP DỮ LIỆU FLEET
 # ============================================================================
-
 def render_fleet_input_section():
     st.subheader("🚚 1. Nhập Dữ Liệu Hạm Đội Xe (Fleet Master Data)")
-    
     seed_fleet = pd.DataFrame({
         "ID_VEHICLE":     ["VEH_01", "VEH_02", "VEH_03"],
         "TRUCK":          ["Xe 1.25 Tấn", "Xe 2.5 Tấn", "Xe 5 Tấn"],
@@ -94,16 +71,13 @@ def render_fleet_input_section():
         "MAX_DISTANCE":   [100.0, 120.0, 150.0],
         "LICENSE":        ["B2", "C", "C"]
     })
-
     mode = st.radio(
         "Phương thức nhập dữ liệu Xe:",
         ["✍️ Nhập trực tiếp (Data Editor)", "📂 Upload file Excel/CSV/JSON"],
         horizontal=True,
         key="fleet_input_mode"
     )
-
     raw_df = None
-
     if mode == "✍️ Nhập trực tiếp (Data Editor)":
         st.markdown("##### 📝 Chỉnh sửa bảng trực tiếp:")
         raw_df = st.data_editor(
@@ -130,15 +104,12 @@ def render_fleet_input_section():
                 st.caption(f"📄 Tìm thấy `{len(raw_df)}` dòng dữ liệu từ file.")
             except Exception as e:
                 st.error(f"❌ Lỗi đọc file: {e}")
-
     if raw_df is not None and not raw_df.empty:
         st.divider()
         st.markdown("### 🔍 Quét & Ánh Xạ Cột Chuẩn Hóa (Semantic Mapping)")
         st.info("💡 Hệ thống tự động đề xuất ghép cột. Cậu có thể chọn lại các cột bên dưới nếu muốn thay đổi.")
-
         input_cols = ["-- Bỏ qua / Không sử dụng --"] + [str(c) for c in raw_df.columns]
         chosen_mapping = {}
-
         cols_ui = st.columns(2)
         for i, (target_field, aliases) in enumerate(VEHICLE_FIELDS.items()):
             best_match = "-- Bỏ qua / Không sử dụng --"
@@ -148,7 +119,6 @@ def render_fleet_input_section():
                 if score > best_score and score > 40:
                     best_score = score
                     best_match = str(col)
-
             with cols_ui[i % 2]:
                 chosen_mapping[target_field] = st.selectbox(
                     f"Cột chuẩn `{target_field}` gán từ:",
@@ -156,7 +126,6 @@ def render_fleet_input_section():
                     index=input_cols.index(best_match) if best_match in input_cols else 0,
                     key=f"select_map_{target_field}"
                 )
-
         st.divider()
         if st.button("🚀 Xử lý & Chuẩn Hóa Dữ Liệu Xe", type="primary", key="btn_process_fleet"):
             processed_rows = []
@@ -168,27 +137,21 @@ def render_fleet_input_section():
                     else:
                         rec[target_field] = None
                 processed_rows.append(process_fleet_record(rec))
-
             final_df = validate_fleet(pd.DataFrame(processed_rows))
             st.session_state["fleet_final_df"] = final_df
-
     if "fleet_final_df" in st.session_state:
         st.markdown("### 📋 Bảng Dữ Liệu Hạm Đội Xe Đã Chuẩn Hóa (Cho phép chỉnh sửa lần cuối)")
-        
         edited_final_df = st.data_editor(
             st.session_state["fleet_final_df"],
             num_rows="dynamic",
             column_order=["ID_VEHICLE", "TRUCK", "MAX_WEIGHT_KG", "MAX_VOLUME_M3", "FIXED_COST", "VARIABLE_COST", "MAX_DISTANCE", "LICENSE", "KIỂM_TRA"],
             key="fleet_final_editor"
         )
-
         out_dir = "output_fleet"
         os.makedirs(out_dir, exist_ok=True)
         xlsx_path = os.path.join(out_dir, "DIM_VEHICLE.xlsx")
-
         with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
             edited_final_df.drop(columns=["KIỂM_TRA"], errors="ignore").to_excel(writer, sheet_name="DIM_VEHICLE", index=False)
-
         with open(xlsx_path, "rb") as f:
             st.download_button(
                 label="⬇️ Tải file chốt DIM_VEHICLE.xlsx",
