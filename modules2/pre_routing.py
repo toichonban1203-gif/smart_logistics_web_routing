@@ -5,16 +5,31 @@ import streamlit as st
 from rapidfuzz import fuzz
 
 # ============================================================================
-# ⚙️ 1. CẤU HÌNH SCHEMA CHUẨN & FIELD MAPPING CHO HỆ SỐ TẮC ĐƯỜNG
+# ⚙️ 1. CẤU HÌNH SCHEMA CHUẨN & FIELD MAPPING CHO MA TRẬN TẮC ĐƯỜNG NGANG
 # ============================================================================
-TRAFFIC_FIELDS = {
-    "WARD":         ["phường", "xã", "phường/xã", "ward", "commune", "địa bàn", "tên phường"],
-    "ZONE":         ["khu vực", "vùng", "zone", "area", "loại khu vực", "phân vùng"],
-    "DAY_OF_WEEK":  ["thứ", "ngày", "ngày trong tuần", "day", "day of week", "weekday", "thứ trong tuần"],
-    "CA_SOM":       ["ca sớm", "sáng sớm", "ca 1", "early", "morning", "ca_som", "hệ số ca sớm"],
-    "CA_TRUA":      ["ca trưa", "buổi trưa", "ca 2", "noon", "midday", "ca_trua", "hệ số ca trưa"],
-    "CA_CHIEU":     ["ca chiều", "buổi chiều", "ca 3", "afternoon", "ca_chieu", "hệ số ca chiều"],
-    "CA_CHAP_TOI":  ["ca chập tối", "chập tối", "chiều tối", "tối", "ca 4", "evening", "dusk", "ca_chap_toi", "hệ số ca chập tối"]
+DAYS_SPEC = [
+    ("T2", "Thứ 2", ["thứ 2", "thu 2", "t2", "mon"]),
+    ("T3", "Thứ 3", ["thứ 3", "thu 3", "t3", "tue"]),
+    ("T4", "Thứ 4", ["thứ 4", "thu 4", "t4", "wed"]),
+    ("T5", "Thứ 5", ["thứ 5", "thu 5", "t5", "thu"]),
+    ("T6", "Thứ 6", ["thứ 6", "thu 6", "t6", "fri"]),
+    ("T7", "Thứ 7", ["thứ 7", "thu 7", "t7", "sat"]),
+    ("CN", "Chủ Nhật", ["chủ nhật", "chu nhat", "cn", "sun", "thứ 8"])
+]
+
+SHIFTS_SPEC = [
+    ("CA1", "🌅 Ca 1 (Sớm)",     ["ca 1", "ca1", "ca sớm", "sớm", "early"]),
+    ("CA2", "☀️ Ca 2 (Trưa)",    ["ca 2", "ca2", "ca trưa", "trưa", "noon"]),
+    ("CA3", "🌤️ Ca 3 (Chiều)",   ["ca 3", "ca3", "ca chiều", "chiều", "afternoon"]),
+    ("CA4", "🌆 Ca 4 (Chập tối)", ["ca 4", "ca4", "ca chập tối", "chập tối", "tối", "evening"])
+]
+
+# Danh sách 28 cột timeline chuẩn: T2_CA1 -> CN_CA4
+TIMELINE_COLS = [f"{d_code}_{s_code}" for d_code, _, _ in DAYS_SPEC for s_code, _, _ in SHIFTS_SPEC]
+
+BASE_TRAFFIC_FIELDS = {
+    "WARD": ["tên phường", "phường", "xã", "phường/xã", "ward", "commune", "địa bàn"],
+    "ZONE": ["area", "khu vực", "vùng", "zone", "loại khu vực", "phân vùng"]
 }
 
 ZONE_OPTIONS = [
@@ -24,23 +39,17 @@ ZONE_OPTIONS = [
     "🌾 Ngoại thành"
 ]
 
-DAY_OPTIONS = [
-    "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ Nhật"
-]
-
 # ============================================================================
-# 🛠️ 2. HÀM ĐỌC MA TRẬN EXCEL 2 TẦNG & CHUẨN HÓA DỮ LIỆU TẮC ĐƯỜNG
+# 🛠️ 2. HÀM ĐỌC FILE EXCEL MA TRẬN NGANG 2 TẦNG & CHUẨN HÓA DỮ LIỆU
 # ============================================================================
-def parse_traffic_excel_smart(uploaded_file) -> pd.DataFrame:
+def parse_traffic_matrix_horizontal(uploaded_file) -> pd.DataFrame:
     """
-    Tự động nhận diện và đọc cả 2 định dạng file Excel:
-    - Dạng ma trận rộng 2 tầng header (Thứ gộp ô trên Ca 1..4 như sheet DIM_AREA)
-    - Dạng bảng phẳng 1 tầng header thông thường
+    Đọc file Excel ma trận ngang (1 Phường = 1 Hàng, 28 cột Thứ x Ca trải ngang).
+    Tự động xử lý header 2 tầng bị gộp ô (Merged Cells) ở sheet DIM_AREA.
     """
     xl = pd.ExcelFile(uploaded_file)
     target_sheet = "DIM_AREA" if "DIM_AREA" in xl.sheet_names else xl.sheet_names[0]
 
-    # Đọc thử 3 dòng đầu không header để kiểm tra cấu trúc Merged Cells
     preview = pd.read_excel(xl, sheet_name=target_sheet, header=None, nrows=3)
     if len(preview) < 2:
         return pd.read_excel(xl, sheet_name=target_sheet)
@@ -53,70 +62,29 @@ def parse_traffic_excel_smart(uploaded_file) -> pd.DataFrame:
     if not is_matrix_2_rows:
         return pd.read_excel(xl, sheet_name=target_sheet)
 
-    # Đọc toàn bộ sheet không header để xử lý gộp ô
+    # Đọc toàn bộ không header để gộp 2 tầng tiêu đề thành tên cột phẳng duy nhất
     raw = pd.read_excel(xl, sheet_name=target_sheet, header=None)
     top_header = raw.iloc[0].ffill().fillna("").astype(str).str.strip()
     sub_header = raw.iloc[1].fillna("").astype(str).str.strip()
     data_body = raw.iloc[2:].copy().reset_index(drop=True)
 
-    # Tìm vị trí cột Tên Phường và Area
-    ward_col_idx, area_col_idx = None, None
+    flat_columns = []
     for idx in range(len(sub_header)):
-        h_combined = f"{top_header[idx]} {sub_header[idx]}".lower()
-        if "phường" in h_combined or "ward" in h_combined:
-            ward_col_idx = idx
-        elif "area" in h_combined or "khu vực" in h_combined:
-            area_col_idx = idx
+        t_val = top_header[idx]
+        s_val = sub_header[idx]
 
-    # Nhóm các cột dữ liệu theo từng Thứ (Thứ 2 -> Chủ Nhật)
-    day_groups = {}
-    for idx in range(len(sub_header)):
-        day_label = top_header[idx]
-        shift_label = sub_header[idx].lower()
+        # Nếu là cột định danh (STT, Tên Phường, Area)
+        if not any(k in t_val.lower() for k in ["thứ", "thu", "chủ nhật", "cn"]):
+            col_name = s_val if s_val else (t_val if t_val else f"COL_{idx}")
+            flat_columns.append(col_name)
+        else:
+            # Gộp tầng 1 (Thứ) + tầng 2 (Ca) -> VD: "Thứ 2 - Ca 1"
+            flat_columns.append(f"{t_val} - {s_val}")
 
-        if not any(k in day_label.lower() for k in ["thứ", "thu", "chủ nhật", "cn"]):
-            continue
-
-        d_norm = "Chủ Nhật"
-        for d_num in ["2", "3", "4", "5", "6", "7"]:
-            if d_num in day_label:
-                d_norm = f"Thứ {d_num}"
-                break
-
-        shift_key = None
-        if "1" in shift_label or "sớm" in shift_label:
-            shift_key = "CA_SOM"
-        elif "2" in shift_label or "trưa" in shift_label:
-            shift_key = "CA_TRUA"
-        elif "3" in shift_label or "chiều" in shift_label:
-            shift_key = "CA_CHIEU"
-        elif "4" in shift_label or "tối" in shift_label:
-            shift_key = "CA_CHAP_TOI"
-
-        if shift_key:
-            day_groups.setdefault(d_norm, {})[shift_key] = idx
-
-    # Xoay ma trận rộng thành bảng chuẩn dọc
-    normalized_rows = []
-    for _, r in data_body.iterrows():
-        ward_val = str(r[ward_col_idx]).strip() if ward_col_idx is not None and pd.notna(r[ward_col_idx]) else ""
-        if not ward_val or ward_val.lower() == "nan":
-            continue
-
-        area_val = str(r[area_col_idx]).strip() if area_col_idx is not None and pd.notna(r[area_col_idx]) else "Đô Thị Lõi"
-
-        for day_name, shift_cols in day_groups.items():
-            normalized_rows.append({
-                "Tên Phường":  ward_val,
-                "Area":        area_val,
-                "Thứ":         day_name,
-                "Ca Sớm":      r[shift_cols["CA_SOM"]] if "CA_SOM" in shift_cols else 1.0,
-                "Ca Trưa":     r[shift_cols["CA_TRUA"]] if "CA_TRUA" in shift_cols else 1.0,
-                "Ca Chiều":    r[shift_cols["CA_CHIEU"]] if "CA_CHIEU" in shift_cols else 1.0,
-                "Ca Chập Tối": r[shift_cols["CA_CHAP_TOI"]] if "CA_CHAP_TOI" in shift_cols else 1.0,
-            })
-
-    return pd.DataFrame(normalized_rows)
+    data_body.columns = flat_columns
+    # Loại bỏ các dòng trống không có dữ liệu
+    data_body = data_body.dropna(how="all").reset_index(drop=True)
+    return data_body
 
 def parse_factor(val) -> float:
     if pd.isna(val) or val is None or str(val).strip() == "":
@@ -138,49 +106,88 @@ def normalize_zone(z_raw: str) -> str:
         return "🌾 Ngoại thành"
     return "🏙️ Nội đô"
 
-def normalize_day(d_raw: str) -> str:
-    d = str(d_raw).lower().strip()
-    if "2" in d or "mon" in d: return "Thứ 2"
-    if "3" in d or "tue" in d: return "Thứ 3"
-    if "4" in d or "wed" in d: return "Thứ 4"
-    if "5" in d or "thu" in d: return "Thứ 5"
-    if "6" in d or "fri" in d: return "Thứ 6"
-    if "7" in d or "sat" in d: return "Thứ 7"
-    if "nhật" in d or "nhat" in d or "cn" in d or "sun" in d or "8" in d: return "Chủ Nhật"
-    return "Thứ 2"
+def auto_match_timeline_cols(df_columns) -> dict:
+    """Tự động ánh xạ 28 cột timeline (T2_CA1 -> CN_CA4) từ tên cột của file đầu vào"""
+    mapping = {}
+    for d_code, d_name, d_kws in DAYS_SPEC:
+        for s_code, s_name, s_kws in SHIFTS_SPEC:
+            target_key = f"{d_code}_{s_code}"
+            best_col = None
+            best_score = 0
 
-def process_traffic_record(rec: dict) -> dict:
-    return {
-        "WARD":        str(rec.get("WARD", "")).strip() if rec.get("WARD") else "",
-        "ZONE":        normalize_zone(rec.get("ZONE", "")),
-        "DAY_OF_WEEK": normalize_day(rec.get("DAY_OF_WEEK", "")),
-        "CA_SOM":      parse_factor(rec.get("CA_SOM")),
-        "CA_TRUA":     parse_factor(rec.get("CA_TRUA")),
-        "CA_CHIEU":    parse_factor(rec.get("CA_CHIEU")),
-        "CA_CHAP_TOI": parse_factor(rec.get("CA_CHAP_TOI"))
+            for col in df_columns:
+                c_low = str(col).lower()
+                # Kiểm tra khớp cả Thứ và Ca trong tên cột
+                has_day = any(dk in c_low for dk in d_kws)
+                has_shift = any(sk in c_low for sk in s_kws)
+                if has_day and has_shift:
+                    score = fuzz.token_set_ratio(c_low, f"{d_name} {s_code}".lower())
+                    if score > best_score:
+                        best_score = score
+                        best_col = str(col)
+                elif c_low == target_key.lower():
+                    best_col = str(col)
+                    break
+
+            mapping[target_key] = best_col
+    return mapping
+
+def process_traffic_row_horizontal(row_dict: dict) -> dict:
+    out = {
+        "WARD": str(row_dict.get("WARD", "")).strip() if row_dict.get("WARD") else "",
+        "ZONE": normalize_zone(row_dict.get("ZONE", ""))
     }
+    for t_col in TIMELINE_COLS:
+        out[t_col] = parse_factor(row_dict.get(t_col))
+    return out
 
-def validate_traffic(df: pd.DataFrame) -> pd.DataFrame:
+def validate_traffic_horizontal(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    dup_key = out.duplicated(subset=["WARD", "DAY_OF_WEEK"], keep=False)
+    dup_ward = out["WARD"].astype(str).str.lower().str.strip().duplicated(keep=False)
     msgs = []
 
     for i, row in out.iterrows():
         errs = []
-        if not str(row.get("WARD", "")).strip():
-            errs.append("Thiếu tên Phường")
-        if dup_key.iloc[i] and str(row.get("WARD", "")).strip():
-            errs.append("Trùng Phường + Thứ")
-        for col in ["CA_SOM", "CA_TRUA", "CA_CHIEU", "CA_CHAP_TOI"]:
-            if row.get(col, 0) < 1.0:
-                errs.append(f"{col} phải >= 1.0")
+        w = str(row.get("WARD", "")).strip()
+        if not w:
+            errs.append("Thiếu Tên Phường")
+        if dup_ward.iloc[i] and w:
+            errs.append("Trùng Tên Phường")
+        if any(row.get(c, 0) < 1.0 for c in TIMELINE_COLS):
+            errs.append("Có hệ số < 1.0")
         msgs.append("❌ " + "; ".join(errs) if errs else "✅ Hợp lệ")
 
     out["KIỂM_TRA"] = msgs
     return out
 
+def export_traffic_matrix_excel(df: pd.DataFrame, xlsx_path: str):
+    """Xuất file Excel giữ nguyên format ma trận 2 tầng header (Thứ gộp ngang trên 4 Ca)"""
+    clean_df = df.drop(columns=["KIỂM_TRA"], errors="ignore").copy()
+    clean_df["ZONE"] = clean_df["ZONE"].str.replace(r"^[^\wÀ-ỹ]+\s*", "", regex=True)
+
+    # Tạo MultiIndex Columns (Tầng 1: Thứ, Tầng 2: Ca)
+    multi_tuples = [("", "STT"), ("", "Tên Phường"), ("", "Area")]
+    for _, d_name, _ in DAYS_SPEC:
+        for s_code, _, _ in SHIFTS_SPEC:
+            ca_label = f"Ca {s_code[-1]}"
+            multi_tuples.append((d_name, ca_label))
+
+    export_data = pd.DataFrame()
+    export_data[("", "STT")] = range(1, len(clean_df) + 1)
+    export_data[("", "Tên Phường")] = clean_df["WARD"].values
+    export_data[("", "Area")] = clean_df["ZONE"].values
+
+    for d_code, d_name, _ in DAYS_SPEC:
+        for s_code, _, _ in SHIFTS_SPEC:
+            col_key = f"{d_code}_{s_code}"
+            ca_label = f"Ca {s_code[-1]}"
+            export_data[(d_name, ca_label)] = clean_df[col_key].values
+
+    export_data.columns = pd.MultiIndex.from_tuples(multi_tuples)
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+        export_data.to_excel(writer, sheet_name="DIM_AREA")
+
 def suggest_base_speed(weight_kg: float) -> float:
-    """Gợi ý vận tốc cơ sở (km/h) dựa trên tải trọng xe"""
     if weight_kg <= 1500:
         return 40.0
     elif weight_kg <= 3500:
@@ -214,7 +221,7 @@ def init_pre_routing_state():
 def render_pre_routing_tab():
     init_pre_routing_state()
     st.header("⚙️ Tab 3: Pre-Routing — Quy Định Vận Tải & Tham Số Đầu Vào")
-    st.caption("🛠️ *Thiết lập các quy định về hàng hóa, ca làm việc, thời điểm kiểm tra xe, hệ số tắc đường và vận tốc cơ sở trước khi định tuyến.*")
+    st.caption("🛠️ *Thiết lập các quy định về hàng hóa, ca làm việc, thời điểm kiểm tra xe, ma trận tắc đường và vận tốc cơ sở trước khi định tuyến.*")
     st.divider()
 
     # ------------------------------------------------------------------------
@@ -277,23 +284,32 @@ def render_pre_routing_tab():
     st.divider()
 
     # ------------------------------------------------------------------------
-    # 🚦 PHẦN 4: HỆ SỐ TẮC ĐƯỜNG THEO PHƯỜNG, KHU VỰC, 4 CA & 7 NGÀY (IMPORT + MAPPING)
+    # 🚦 PHẦN 4: MA TRẬN HỆ SỐ TẮC ĐƯỜNG NGANG (1 PHƯỜNG = 1 HÀNG, 28 CỘT TIMELINE)
     # ------------------------------------------------------------------------
-    st.markdown("### 🚦 4. Bảng Hệ Số Tắc Đường Theo Phường, Khu Vực & Khung Ca")
-    st.caption("📍 *Hỗ trợ đẩy file ma trận Excel (tự động nhận diện sheet `DIM_AREA` & header 2 tầng) hoặc nhập trực tiếp.*")
+    st.markdown("### 🚦 4. Ma Trận Hệ Số Tắc Đường Theo Phường & Timeline (7 Ngày × 4 Ca)")
+    st.caption("📍 *Mỗi phường là 1 hàng ngang, trải dài qua 28 khung giờ từ Thứ 2 (Ca 1 → Ca 4) đến Chủ Nhật (Ca 1 → Ca 4).*")
 
-    seed_traffic = pd.DataFrame({
-        "WARD":        ["Hoàn Kiếm", "Vĩnh Tuy", "Dương Nội", "Đông Anh"],
-        "ZONE":        ["🏙️ Nội đô", "🛣️ Gần trục đường lớn", "🏘️ Đô thị vệ tinh", "🌾 Ngoại thành"],
-        "DAY_OF_WEEK": ["Thứ 2", "Thứ 2", "Thứ 6", "Chủ Nhật"],
-        "CA_SOM":      [2.20, 4.00, 1.30, 1.10],
-        "CA_TRUA":     [1.60, 2.80, 1.10, 1.05],
-        "CA_CHIEU":    [1.50, 2.40, 1.25, 1.10],
-        "CA_CHAP_TOI": [1.80, 3.20, 1.45, 1.15]
-    })
+    # Tạo dữ liệu mẫu 4 phường đại diện 4 khu vực
+    seed_data = {
+        "WARD": ["Hoàn Kiếm", "Vĩnh Tuy", "Dương Nội", "Đông Anh"],
+        "ZONE": ["🏙️ Nội đô", "🛣️ Gần trục đường lớn", "🏘️ Đô thị vệ tinh", "🌾 Ngoại thành"],
+    }
+    base_patterns = [
+        [2.20, 1.60, 1.50, 1.80],
+        [4.00, 2.80, 2.40, 3.20],
+        [1.40, 1.15, 1.25, 1.50],
+        [1.15, 1.05, 1.10, 1.20],
+    ]
+    for d_idx, (d_code, _, _) in enumerate(DAYS_SPEC):
+        decay = 1.0 if d_idx == 0 else (0.85 if d_idx == 6 else 0.90)
+        for s_idx, (s_code, _, _) in enumerate(SHIFTS_SPEC):
+            seed_data[f"{d_code}_{s_code}"] = [
+                round(max(1.0, base_patterns[w_i][s_idx] * decay), 2) for w_i in range(4)
+            ]
+    seed_traffic_df = pd.DataFrame(seed_data)
 
     mode = st.radio(
-        "Phương thức nhập dữ liệu Hệ số tắc đường:",
+        "Phương thức nhập Ma trận tắc đường:",
         ["📂 Upload file Excel/CSV/JSON", "✍️ Nhập trực tiếp (Data Editor)"],
         horizontal=True,
         key="traffic_input_mode"
@@ -301,27 +317,28 @@ def render_pre_routing_tab():
 
     raw_df = None
     if mode == "✍️ Nhập trực tiếp (Data Editor)":
-        st.markdown("##### 📝 Chỉnh sửa bảng hệ số trực tiếp:")
+        st.markdown("##### 📝 Chỉnh sửa trực tiếp ma trận ngang (cuộn ngang để xem đủ Thứ 2 → Chủ Nhật):")
+        col_cfg = {
+            "WARD": st.column_config.TextColumn("📍 Tên Phường", required=True, pinned=True),
+            "ZONE": st.column_config.SelectboxColumn("🗺️ Khu vực", options=ZONE_OPTIONS, required=True, pinned=True),
+        }
+        for d_code, d_name, _ in DAYS_SPEC:
+            for s_code, _, _ in SHIFTS_SPEC:
+                col_cfg[f"{d_code}_{s_code}"] = st.column_config.NumberColumn(
+                    f"{d_code} | Ca {s_code[-1]}", min_value=1.0, max_value=10.0, step=0.05, format="%.2f"
+                )
         raw_df = st.data_editor(
-            seed_traffic,
+            seed_traffic_df,
             num_rows="dynamic",
-            column_config={
-                "WARD":        st.column_config.TextColumn("📍 Phường / Xã", required=True),
-                "ZONE":        st.column_config.SelectboxColumn("🗺️ Khu vực", options=ZONE_OPTIONS, required=True),
-                "DAY_OF_WEEK": st.column_config.SelectboxColumn("📅 Ngày trong tuần", options=DAY_OPTIONS, required=True),
-                "CA_SOM":      st.column_config.NumberColumn("🌅 Ca Sớm", min_value=1.0, max_value=10.0, step=0.05),
-                "CA_TRUA":     st.column_config.NumberColumn("☀️ Ca Trưa", min_value=1.0, max_value=10.0, step=0.05),
-                "CA_CHIEU":    st.column_config.NumberColumn("🌤️ Ca Chiều", min_value=1.0, max_value=10.0, step=0.05),
-                "CA_CHAP_TOI": st.column_config.NumberColumn("🌆 Ca Chập Tối", min_value=1.0, max_value=10.0, step=0.05),
-            },
-            key="traffic_editor"
+            column_config=col_cfg,
+            key="traffic_editor_horiz"
         )
     else:
-        st.markdown("##### 📂 Upload file hệ số tắc đường từ máy tính:")
+        st.markdown("##### 📂 Upload file ma trận tắc đường từ máy tính:")
         uploaded_file = st.file_uploader(
-            "Chọn file hệ số tắc đường (xlsx, xls, csv, json)",
+            "Chọn file ma trận tắc đường (xlsx, xls, csv, json)",
             type=["xlsx", "xls", "csv", "json"],
-            key="traffic_upload"
+            key="traffic_upload_horiz"
         )
         if uploaded_file is not None:
             try:
@@ -330,34 +347,24 @@ def render_pre_routing_tab():
                 elif uploaded_file.name.endswith(".json"):
                     raw_df = pd.read_json(uploaded_file)
                 else:
-                    raw_df = parse_traffic_excel_smart(uploaded_file)
-                st.caption(f"📄 Đã trích xuất thành công `{len(raw_df)}` dòng dữ liệu tắc đường chuẩn hóa từ file.")
+                    raw_df = parse_traffic_matrix_horizontal(uploaded_file)
+                st.caption(f"📄 Tìm thấy `{len(raw_df)}` phường (hàng ngang) và `{len(raw_df.columns)}` cột dữ liệu trong file.")
             except Exception as e:
                 st.error(f"❌ Lỗi đọc file: {e}")
 
     # ============================================================================
-    # 🔍 ÁNH XẠ CỘT SEMANTIC MAPPING CHO BẢNG TẮC ĐƯỜNG
+    # 🔍 ÁNH XẠ CỘT SEMANTIC MAPPING CHO MA TRẬN NGANG
     # ============================================================================
     if raw_df is not None and not raw_df.empty:
         st.divider()
-        st.markdown("#### 🔍 Quét & Ánh Xạ Cột Hệ Số Tắc Đường Chuẩn Hóa")
-        st.info("💡 Hệ thống tự động ghép cột từ file của cậu. Có thể chọn lại ở các ô bên dưới nếu tên cột trong file khác biệt.")
+        st.markdown("#### 🔍 Quét & Ánh Xạ Cột Ma Trận Ngang")
+        st.info("💡 Hệ thống tự động nhận diện cột **Tên Phường**, **Khu vực (Area)** và **28 cột timeline (Thứ 2 → Chủ Nhật × Ca 1 → Ca 4)**.")
 
         input_cols = ["-- Bỏ qua / Không sử dụng --"] + [str(c) for c in raw_df.columns]
-        chosen_mapping = {}
-        cols_ui = st.columns(4)
+        chosen_base_map = {}
+        c_map1, c_map2 = st.columns(2)
 
-        field_labels = {
-            "WARD":        "📍 Phường (WARD)",
-            "ZONE":        "🗺️ Khu vực (ZONE)",
-            "DAY_OF_WEEK": "📅 Ngày trong tuần",
-            "CA_SOM":      "🌅 Ca Sớm",
-            "CA_TRUA":     "☀️ Ca Trưa",
-            "CA_CHIEU":    "🌤️ Ca Chiều",
-            "CA_CHAP_TOI": "🌆 Ca Chập Tối"
-        }
-
-        for i, (target_field, aliases) in enumerate(TRAFFIC_FIELDS.items()):
+        for idx, (target_field, aliases) in enumerate(BASE_TRAFFIC_FIELDS.items()):
             best_match = "-- Bỏ qua / Không sử dụng --"
             best_score = 0
             for col in raw_df.columns:
@@ -365,83 +372,114 @@ def render_pre_routing_tab():
                 if score > best_score and score > 40:
                     best_score = score
                     best_match = str(col)
-            with cols_ui[i % 4]:
-                chosen_mapping[target_field] = st.selectbox(
-                    f"{field_labels[target_field]} gán từ:",
+            target_col_ui = c_map1 if idx == 0 else c_map2
+            label_txt = "📍 Cột Tên Phường (`WARD`):" if target_field == "WARD" else "🗺️ Cột Khu Vực (`ZONE / Area`):"
+            with target_col_ui:
+                chosen_base_map[target_field] = st.selectbox(
+                    label_txt,
                     options=input_cols,
                     index=input_cols.index(best_match) if best_match in input_cols else 0,
-                    key=f"select_map_tf_{target_field}"
+                    key=f"map_tf_base_{target_field}"
                 )
 
+        # Tự động ánh xạ 28 cột timeline và cho phép mở rộng kiểm tra
+        auto_timeline_map = auto_match_timeline_cols(raw_df.columns)
+        matched_count = sum(1 for v in auto_timeline_map.values() if v is not None)
+        st.caption(f"🎯 Đã tự động khớp **{matched_count}/28** cột timeline (`Thứ 2 Ca 1` → `Chủ Nhật Ca 4`).")
+
+        with st.expander("🛠️ Kiểm tra / Tùy chỉnh chi tiết ánh xạ 28 cột timeline (Thứ × Ca)", expanded=(matched_count < 28)):
+            chosen_timeline_map = {}
+            for d_code, d_name, _ in DAYS_SPEC:
+                st.markdown(f"**📅 {d_name}**")
+                d_cols = st.columns(4)
+                for s_idx, (s_code, s_label, _) in enumerate(SHIFTS_SPEC):
+                    t_key = f"{d_code}_{s_code}"
+                    detected_col = auto_timeline_map.get(t_key)
+                    default_idx = input_cols.index(detected_col) if detected_col in input_cols else 0
+                    with d_cols[s_idx]:
+                        chosen_timeline_map[t_key] = st.selectbox(
+                            s_label,
+                            options=input_cols,
+                            index=default_idx,
+                            key=f"map_tl_{t_key}"
+                        )
+
         st.divider()
-        if st.button("🚀 Quét & Tổng Hợp Bảng Hệ Số Tắc Đường", type="primary", key="btn_process_traffic"):
+        if st.button("🚀 Quét & Tổng Hợp Ma Trận Tắc Đường", type="primary", key="btn_process_traffic_horiz"):
             processed_rows = []
             for _, row in raw_df.iterrows():
                 rec = {}
-                for target_field, mapped_col in chosen_mapping.items():
-                    if mapped_col != "-- Bỏ qua / Không sử dụng --" and mapped_col in raw_df.columns:
-                        rec[target_field] = row[mapped_col]
-                    else:
-                        rec[target_field] = None
-                processed_rows.append(process_traffic_record(rec))
+                for b_field, m_col in chosen_base_map.items():
+                    rec[b_field] = row[m_col] if (m_col != "-- Bỏ qua / Không sử dụng --" and m_col in raw_df.columns) else None
+                for t_key, m_col in chosen_timeline_map.items():
+                    rec[t_key] = row[m_col] if (m_col != "-- Bỏ qua / Không sử dụng --" and m_col in raw_df.columns) else 1.0
+                processed_rows.append(process_traffic_row_horizontal(rec))
 
-            final_tf_df = validate_traffic(pd.DataFrame(processed_rows))
+            final_tf_df = validate_traffic_horizontal(pd.DataFrame(processed_rows))
             st.session_state["traffic_final_df"] = final_tf_df
 
     # ============================================================================
-    # 📋 BẢNG TỔNG HỢP ĐẸP & XUẤT FILE EXCEL DIM_TRAFFIC_FACTOR.XLSX
+    # 📋 BẢNG TỔNG HỢP MA TRẬN NGANG ĐẸP & XUẤT FILE EXCEL DIM_TRAFFIC_FACTOR.XLSX
     # ============================================================================
     if "traffic_final_df" in st.session_state and not st.session_state["traffic_final_df"].empty:
-        st.markdown("#### 📊 Bảng Tổng Hợp Hệ Số Tắc Đường Đã Chuẩn Hóa")
+        st.markdown("#### 📊 Bảng Tổng Hợp Ma Trận Tắc Đường Đã Chuẩn Hóa")
 
         df_tf = st.session_state["traffic_final_df"]
 
+        # KPI Cards tổng quan nhanh
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("📍 Tổng Số Phường", f"{df_tf['WARD'].nunique()} phường")
-        k2.metric("📋 Tổng Bản Ghi", f"{len(df_tf)} dòng")
-        max_tf = df_tf[["CA_SOM", "CA_TRUA", "CA_CHIEU", "CA_CHAP_TOI"]].max().max()
-        avg_tf = df_tf[["CA_SOM", "CA_TRUA", "CA_CHIEU", "CA_CHAP_TOI"]].mean().mean()
+        k1.metric("📍 Tổng Số Phường", f"{len(df_tf)} phường")
+        k2.metric("🗺️ Số Nhóm Khu Vực", f"{df_tf['ZONE'].nunique()} khu vực")
+        max_tf = df_tf[TIMELINE_COLS].max().max()
+        avg_tf = df_tf[TIMELINE_COLS].mean().mean()
         k3.metric("🔥 Hệ Số Cao Nhất", f"{max_tf:.2f}x")
         k4.metric("⚖️ Hệ Số Trung Bình", f"{avg_tf:.2f}x")
 
+        # Bộ lọc nhanh theo khu vực để dễ quan sát
+        zone_filter = st.multiselect(
+            "🔎 Lọc nhanh theo Khu vực:",
+            options=ZONE_OPTIONS,
+            default=ZONE_OPTIONS,
+            key="filter_zone_tf"
+        )
+        df_view = df_tf[df_tf["ZONE"].isin(zone_filter)] if zone_filter else df_tf
+
+        display_col_cfg = {
+            "WARD":     st.column_config.TextColumn("📍 Tên Phường", pinned=True),
+            "ZONE":     st.column_config.SelectboxColumn("🗺️ Khu Vực", options=ZONE_OPTIONS, pinned=True),
+            "KIỂM_TRA": st.column_config.TextColumn("🛡️ Trạng Thái")
+        }
+        for d_code, _, _ in DAYS_SPEC:
+            for s_code, _, _ in SHIFTS_SPEC:
+                display_col_cfg[f"{d_code}_{s_code}"] = st.column_config.NumberColumn(
+                    f"{d_code} | Ca {s_code[-1]}", format="%.2f"
+                )
+
         edited_tf_df = st.data_editor(
-            df_tf,
+            df_view,
             num_rows="dynamic",
             use_container_width=True,
-            column_config={
-                "WARD":        st.column_config.TextColumn("📍 Phường / Xã"),
-                "ZONE":        st.column_config.SelectboxColumn("🗺️ Phân Loại Khu Vực", options=ZONE_OPTIONS),
-                "DAY_OF_WEEK": st.column_config.SelectboxColumn("📅 Thứ Trong Tuần", options=DAY_OPTIONS),
-                "CA_SOM":      st.column_config.NumberColumn("🌅 Ca Sớm", format="%.2f"),
-                "CA_TRUA":     st.column_config.NumberColumn("☀️ Ca Trưa", format="%.2f"),
-                "CA_CHIEU":    st.column_config.NumberColumn("🌤️ Ca Chiều", format="%.2f"),
-                "CA_CHAP_TOI": st.column_config.NumberColumn("🌆 Ca Chập Tối", format="%.2f"),
-                "KIỂM_TRA":    st.column_config.TextColumn("🛡️ Trạng Thái")
-            },
-            column_order=["WARD", "ZONE", "DAY_OF_WEEK", "CA_SOM", "CA_TRUA", "CA_CHIEU", "CA_CHAP_TOI", "KIỂM_TRA"],
-            key="traffic_final_editor"
+            column_config=display_col_cfg,
+            column_order=["WARD", "ZONE"] + TIMELINE_COLS + ["KIỂM_TRA"],
+            key="traffic_final_editor_horiz"
         )
 
+        # Xuất file Excel giữ nguyên format ma trận 2 tầng header
         out_dir = "output_pre_routing"
         os.makedirs(out_dir, exist_ok=True)
         xlsx_path = os.path.join(out_dir, "DIM_TRAFFIC_FACTOR.xlsx")
-
-        export_df = edited_tf_df.drop(columns=["KIỂM_TRA"], errors="ignore").copy()
-        export_df["ZONE"] = export_df["ZONE"].str.replace(r"^[^\wÀ-ỹ]+\s*", "", regex=True)
-
-        with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-            export_df.to_excel(writer, sheet_name="DIM_TRAFFIC_FACTOR", index=False)
+        export_traffic_matrix_excel(edited_tf_df, xlsx_path)
 
         with open(xlsx_path, "rb") as f:
             st.download_button(
-                label="⬇️ Tải bảng tổng hợp Excel (DIM_TRAFFIC_FACTOR.xlsx)",
+                label="⬇️ Tải Ma Trận Tắc Đường Excel (DIM_TRAFFIC_FACTOR.xlsx)",
                 data=f,
                 file_name="DIM_TRAFFIC_FACTOR.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_dim_traffic"
+                key="dl_dim_traffic_horiz"
             )
     else:
-        export_df = pd.DataFrame()
+        edited_tf_df = pd.DataFrame()
 
     st.divider()
 
@@ -521,12 +559,18 @@ def render_pre_routing_tab():
     # ------------------------------------------------------------------------
     # 🔑 ĐÓNG GÓI LƯU CẤU HÌNH VÀO SESSION STATE CỦA HỆ THỐNG
     # ------------------------------------------------------------------------
+    export_records = []
+    if not edited_tf_df.empty:
+        clean_records_df = edited_tf_df.drop(columns=["KIỂM_TRA"], errors="ignore").copy()
+        clean_records_df["ZONE"] = clean_records_df["ZONE"].str.replace(r"^[^\wÀ-ỹ]+\s*", "", regex=True)
+        export_records = clean_records_df.to_dict(orient="records")
+
     st.session_state["pre_routing_config"] = {
         "constraint_mode": constraint_mode,
         "shifts": shifts_data,
         "split_time": split_time,
-        "traffic_table": export_df.to_dict(orient="records") if not export_df.empty else [],
+        "traffic_matrix": export_records,
         "fleet_base_speeds": edited_speed_df.to_dict(orient="records") if not edited_speed_df.empty else []
     }
     st.divider()
-    st.success("✅ Toàn bộ cấu hình Pre-Routing, Hệ số tắc đường & Vận tốc cơ sở đã được lưu vào hệ thống!")
+    st.success("✅ Toàn bộ cấu hình Pre-Routing, Ma trận tắc đường ngang & Vận tốc cơ sở đã được lưu vào hệ thống!")
