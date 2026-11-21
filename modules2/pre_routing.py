@@ -24,7 +24,6 @@ SHIFTS_SPEC = [
     ("CA4", "🌆 Ca 4 (Chập tối)", ["ca 4", "ca4", "ca chập tối", "chập tối", "tối", "evening"])
 ]
 
-# Danh sách 28 cột timeline chuẩn: T2_CA1 -> CN_CA4
 TIMELINE_COLS = [f"{d_code}_{s_code}" for d_code, _, _ in DAYS_SPEC for s_code, _, _ in SHIFTS_SPEC]
 
 BASE_TRAFFIC_FIELDS = {
@@ -33,20 +32,18 @@ BASE_TRAFFIC_FIELDS = {
 }
 
 ZONE_OPTIONS = [
-    "🏙️ Nội đô",
+    "🏙️ Đô thị lõi",
     "🛣️ Gần trục đường lớn",
     "🏘️ Đô thị vệ tinh",
     "🌾 Ngoại thành"
 ]
 
+SPEED_ZONE_COLS = ["SPD_CORE", "SPD_ARTERIAL", "SPD_SATELLITE", "SPD_SUBURBAN"]
+
 # ============================================================================
 # 🛠️ 2. HÀM ĐỌC FILE EXCEL MA TRẬN NGANG 2 TẦNG & CHUẨN HÓA DỮ LIỆU
 # ============================================================================
 def parse_traffic_matrix_horizontal(uploaded_file) -> pd.DataFrame:
-    """
-    Đọc file Excel ma trận ngang (1 Phường = 1 Hàng, 28 cột Thứ x Ca trải ngang).
-    Tự động xử lý header 2 tầng bị gộp ô (Merged Cells) ở sheet DIM_AREA.
-    """
     xl = pd.ExcelFile(uploaded_file)
     target_sheet = "DIM_AREA" if "DIM_AREA" in xl.sheet_names else xl.sheet_names[0]
 
@@ -62,7 +59,6 @@ def parse_traffic_matrix_horizontal(uploaded_file) -> pd.DataFrame:
     if not is_matrix_2_rows:
         return pd.read_excel(xl, sheet_name=target_sheet)
 
-    # Đọc toàn bộ không header để gộp 2 tầng tiêu đề thành tên cột phẳng duy nhất
     raw = pd.read_excel(xl, sheet_name=target_sheet, header=None)
     top_header = raw.iloc[0].ffill().fillna("").astype(str).str.strip()
     sub_header = raw.iloc[1].fillna("").astype(str).str.strip()
@@ -73,16 +69,13 @@ def parse_traffic_matrix_horizontal(uploaded_file) -> pd.DataFrame:
         t_val = top_header[idx]
         s_val = sub_header[idx]
 
-        # Nếu là cột định danh (STT, Tên Phường, Area)
         if not any(k in t_val.lower() for k in ["thứ", "thu", "chủ nhật", "cn"]):
             col_name = s_val if s_val else (t_val if t_val else f"COL_{idx}")
             flat_columns.append(col_name)
         else:
-            # Gộp tầng 1 (Thứ) + tầng 2 (Ca) -> VD: "Thứ 2 - Ca 1"
             flat_columns.append(f"{t_val} - {s_val}")
 
     data_body.columns = flat_columns
-    # Loại bỏ các dòng trống không có dữ liệu
     data_body = data_body.dropna(how="all").reset_index(drop=True)
     return data_body
 
@@ -104,10 +97,9 @@ def normalize_zone(z_raw: str) -> str:
         return "🏘️ Đô thị vệ tinh"
     if "ngoại thành" in z or "ngoại ô" in z or "huyện" in z:
         return "🌾 Ngoại thành"
-    return "🏙️ Nội đô"
+    return "🏙️ Đô thị lõi"
 
 def auto_match_timeline_cols(df_columns) -> dict:
-    """Tự động ánh xạ 28 cột timeline (T2_CA1 -> CN_CA4) từ tên cột của file đầu vào"""
     mapping = {}
     for d_code, d_name, d_kws in DAYS_SPEC:
         for s_code, s_name, s_kws in SHIFTS_SPEC:
@@ -117,7 +109,6 @@ def auto_match_timeline_cols(df_columns) -> dict:
 
             for col in df_columns:
                 c_low = str(col).lower()
-                # Kiểm tra khớp cả Thứ và Ca trong tên cột
                 has_day = any(dk in c_low for dk in d_kws)
                 has_shift = any(sk in c_low for sk in s_kws)
                 if has_day and has_shift:
@@ -161,16 +152,13 @@ def validate_traffic_horizontal(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def export_traffic_matrix_excel(df: pd.DataFrame, xlsx_path: str):
-    """Xuất file Excel giữ nguyên format ma trận 2 tầng header (Thứ gộp ngang trên 4 Ca)"""
     clean_df = df.drop(columns=["KIỂM_TRA"], errors="ignore").copy()
     clean_df["ZONE"] = clean_df["ZONE"].str.replace(r"^[^\wÀ-ỹ]+\s*", "", regex=True)
 
-    # Tạo MultiIndex Columns (Tầng 1: Thứ, Tầng 2: Ca)
     multi_tuples = [("", "STT"), ("", "Tên Phường"), ("", "Area")]
     for _, d_name, _ in DAYS_SPEC:
         for s_code, _, _ in SHIFTS_SPEC:
-            ca_label = f"Ca {s_code[-1]}"
-            multi_tuples.append((d_name, ca_label))
+            multi_tuples.append((d_name, f"Ca {s_code[-1]}"))
 
     export_data = pd.DataFrame()
     export_data[("", "STT")] = range(1, len(clean_df) + 1)
@@ -179,20 +167,45 @@ def export_traffic_matrix_excel(df: pd.DataFrame, xlsx_path: str):
 
     for d_code, d_name, _ in DAYS_SPEC:
         for s_code, _, _ in SHIFTS_SPEC:
-            col_key = f"{d_code}_{s_code}"
-            ca_label = f"Ca {s_code[-1]}"
-            export_data[(d_name, ca_label)] = clean_df[col_key].values
+            export_data[(d_name, f"Ca {s_code[-1]}")] = clean_df[f"{d_code}_{s_code}"].values
 
     export_data.columns = pd.MultiIndex.from_tuples(multi_tuples)
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
         export_data.to_excel(writer, sheet_name="DIM_AREA")
 
-def suggest_base_speed(weight_kg: float) -> float:
-    if weight_kg <= 1500:
-        return 40.0
-    elif weight_kg <= 3500:
-        return 35.0
-    return 30.0
+def suggest_zone_speeds(weight_kg: float) -> tuple:
+    """Gợi ý vận tốc cơ sở (km/h) theo 4 khu vực chuẩn như mẫu DIM_VEHICLE"""
+    if weight_kg >= 2000:
+        return (45.0, 35.0, 50.0, 55.0)
+    elif weight_kg >= 500:
+        return (40.0, 30.0, 45.0, 50.0)
+    return (30.0, 25.0, 35.0, 40.0)
+
+def export_vehicle_speed_matrix_excel(df: pd.DataFrame, xlsx_path: str):
+    """Xuất file Excel giữ đúng format nhóm cột 'Vận tốc cơ sở' gộp ngang trên 4 khu vực"""
+    multi_tuples = [
+        ("", "ID_VEHICLE"),
+        ("", "TRUCK"),
+        ("", "MAX_WEIGHT_KG"),
+        ("", "MAX_VOLUME_M3"),
+        ("Vận tốc cơ sở", "Đô thị lõi"),
+        ("Vận tốc cơ sở", "Gần trục đường lớn"),
+        ("Vận tốc cơ sở", "Đô thị vệ tinh"),
+        ("Vận tốc cơ sở", "Ngoại thành"),
+    ]
+    export_data = pd.DataFrame()
+    export_data[("", "ID_VEHICLE")] = df["ID_VEHICLE"].values
+    export_data[("", "TRUCK")] = df["TRUCK"].values
+    export_data[("", "MAX_WEIGHT_KG")] = df["MAX_WEIGHT_KG"].values
+    export_data[("", "MAX_VOLUME_M3")] = df["MAX_VOLUME_M3"].values
+    export_data[("Vận tốc cơ sở", "Đô thị lõi")] = df["SPD_CORE"].values
+    export_data[("Vận tốc cơ sở", "Gần trục đường lớn")] = df["SPD_ARTERIAL"].values
+    export_data[("Vận tốc cơ sở", "Đô thị vệ tinh")] = df["SPD_SATELLITE"].values
+    export_data[("Vận tốc cơ sở", "Ngoại thành")] = df["SPD_SUBURBAN"].values
+
+    export_data.columns = pd.MultiIndex.from_tuples(multi_tuples)
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+        export_data.to_excel(writer, sheet_name="DIM_VEHICLE_SPEED")
 
 # ============================================================================
 # ⚙️ 3. KHỞI TẠO GIÁ TRỊ MẶC ĐỊNH TRONG SESSION STATE
@@ -221,7 +234,7 @@ def init_pre_routing_state():
 def render_pre_routing_tab():
     init_pre_routing_state()
     st.header("⚙️ Tab 3: Pre-Routing — Quy Định Vận Tải & Tham Số Đầu Vào")
-    st.caption("🛠️ *Thiết lập các quy định về hàng hóa, ca làm việc, thời điểm kiểm tra xe, ma trận tắc đường và vận tốc cơ sở trước khi định tuyến.*")
+    st.caption("🛠️ *Thiết lập các quy định về hàng hóa, ca làm việc, thời điểm kiểm tra xe, ma trận tắc đường và vận tốc cơ sở theo khu vực.*")
     st.divider()
 
     # ------------------------------------------------------------------------
@@ -289,10 +302,9 @@ def render_pre_routing_tab():
     st.markdown("### 🚦 4. Ma Trận Hệ Số Tắc Đường Theo Phường & Timeline (7 Ngày × 4 Ca)")
     st.caption("📍 *Mỗi phường là 1 hàng ngang, trải dài qua 28 khung giờ từ Thứ 2 (Ca 1 → Ca 4) đến Chủ Nhật (Ca 1 → Ca 4).*")
 
-    # Tạo dữ liệu mẫu 4 phường đại diện 4 khu vực
     seed_data = {
         "WARD": ["Hoàn Kiếm", "Vĩnh Tuy", "Dương Nội", "Đông Anh"],
-        "ZONE": ["🏙️ Nội đô", "🛣️ Gần trục đường lớn", "🏘️ Đô thị vệ tinh", "🌾 Ngoại thành"],
+        "ZONE": ["🏙️ Đô thị lõi", "🛣️ Gần trục đường lớn", "🏘️ Đô thị vệ tinh", "🌾 Ngoại thành"],
     }
     base_patterns = [
         [2.20, 1.60, 1.50, 1.80],
@@ -382,7 +394,6 @@ def render_pre_routing_tab():
                     key=f"map_tf_base_{target_field}"
                 )
 
-        # Tự động ánh xạ 28 cột timeline và cho phép mở rộng kiểm tra
         auto_timeline_map = auto_match_timeline_cols(raw_df.columns)
         matched_count = sum(1 for v in auto_timeline_map.values() if v is not None)
         st.caption(f"🎯 Đã tự động khớp **{matched_count}/28** cột timeline (`Thứ 2 Ca 1` → `Chủ Nhật Ca 4`).")
@@ -422,11 +433,15 @@ def render_pre_routing_tab():
     # 📋 BẢNG TỔNG HỢP MA TRẬN NGANG ĐẸP & XUẤT FILE EXCEL DIM_TRAFFIC_FACTOR.XLSX
     # ============================================================================
     if "traffic_final_df" in st.session_state and not st.session_state["traffic_final_df"].empty:
-        st.markdown("#### 📊 Bảng Tổng Hợp Ma Trận Tắc Đường Đã Chuẩn Hóa")
-
         df_tf = st.session_state["traffic_final_df"]
 
-        # KPI Cards tổng quan nhanh
+        # Tự động dọn session cũ nếu lệch schema cột
+        if any(c not in df_tf.columns for c in TIMELINE_COLS):
+            del st.session_state["traffic_final_df"]
+            st.rerun()
+
+        st.markdown("#### 📊 Bảng Tổng Hợp Ma Trận Tắc Đường Đã Chuẩn Hóa")
+
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("📍 Tổng Số Phường", f"{len(df_tf)} phường")
         k2.metric("🗺️ Số Nhóm Khu Vực", f"{df_tf['ZONE'].nunique()} khu vực")
@@ -435,7 +450,6 @@ def render_pre_routing_tab():
         k3.metric("🔥 Hệ Số Cao Nhất", f"{max_tf:.2f}x")
         k4.metric("⚖️ Hệ Số Trung Bình", f"{avg_tf:.2f}x")
 
-        # Bộ lọc nhanh theo khu vực để dễ quan sát
         zone_filter = st.multiselect(
             "🔎 Lọc nhanh theo Khu vực:",
             options=ZONE_OPTIONS,
@@ -464,7 +478,6 @@ def render_pre_routing_tab():
             key="traffic_final_editor_horiz"
         )
 
-        # Xuất file Excel giữ nguyên format ma trận 2 tầng header
         out_dir = "output_pre_routing"
         os.makedirs(out_dir, exist_ok=True)
         xlsx_path = os.path.join(out_dir, "DIM_TRAFFIC_FACTOR.xlsx")
@@ -484,10 +497,10 @@ def render_pre_routing_tab():
     st.divider()
 
     # ------------------------------------------------------------------------
-    # 🏎️ PHẦN 5: THIẾT LẬP VẬN TỐC CƠ SỞ TỪ OUTPUT POOL XE (TAB 1)
+    # 🏎️ PHẦN 5: MA TRẬN VẬN TỐC CƠ SỞ THEO LOẠI XE (HÀNG) × KHU VỰC (CỘT)
     # ------------------------------------------------------------------------
-    st.markdown("### 🏎️ 5. Thiết Lập Vận Tốc Cơ Sở Theo Hạm Đội Xe (Từ Tab 1)")
-    st.caption("🚚 *Hệ thống tự động kéo danh sách xe từ **Tab 1 (Fleet Master)** để cấu hình vận tốc di chuyển tiêu chuẩn (km/h) trước khi nhân hệ số tắc đường.*")
+    st.markdown("### 🏎️ 5. Ma Trận Vận Tốc Cơ Sở Theo Loại Xe & Khu Vực (Từ Tab 1)")
+    st.caption("🚚 *Hàng là danh sách xe lấy từ **Tab 1 (Fleet Master)**, cột là 4 nhóm Khu vực (`Đô thị lõi`, `Gần trục đường lớn`, `Đô thị vệ tinh`, `Ngoại thành`) — đơn vị: **km/h**.*")
 
     if "fleet_final_df" in st.session_state and not st.session_state["fleet_final_df"].empty:
         pool_df = st.session_state["fleet_final_df"].copy()
@@ -495,10 +508,10 @@ def render_pre_routing_tab():
     else:
         st.warning("⚠️ Chưa tìm thấy dữ liệu hạm đội xe từ **Tab 1 (Fleet Master)**. Đang hiển thị danh sách xe mẫu để cấu hình tạm.")
         pool_df = pd.DataFrame({
-            "ID_VEHICLE":    ["VEH_01", "VEH_02", "VEH_03"],
-            "TRUCK":         ["Xe 1.25 Tấn", "Xe 2.5 Tấn", "Xe 5 Tấn"],
-            "MAX_WEIGHT_KG": [1250.0, 2500.0, 5000.0],
-            "MAX_VOLUME_M3": [8.0, 15.0, 24.0]
+            "ID_VEHICLE":    ["VH02", "VH03", "VH05", "VH09"],
+            "TRUCK":         ["Xe 3 Tấn", "Xe 2.5 Tấn", "Xe 800 Kg", "Xe Van 100 Kg"],
+            "MAX_WEIGHT_KG": [3000.0, 2500.0, 800.0, 100.0],
+            "MAX_VOLUME_M3": [20.0, 15.0, 5.0, 1.0]
         })
 
     speed_rows = []
@@ -508,12 +521,16 @@ def render_pre_routing_tab():
             continue
         w_kg = pd.to_numeric(row.get("MAX_WEIGHT_KG", 0), errors="coerce") or 0.0
         v_m3 = pd.to_numeric(row.get("MAX_VOLUME_M3", 0), errors="coerce") or 0.0
+        s_core, s_art, s_sat, s_sub = suggest_zone_speeds(float(w_kg))
         speed_rows.append({
-            "ID_VEHICLE":      vid,
-            "TRUCK":           str(row.get("TRUCK", "Xe tải tiêu chuẩn")).strip(),
-            "MAX_WEIGHT_KG":   float(w_kg),
-            "MAX_VOLUME_M3":   float(v_m3),
-            "BASE_SPEED_KMH":  suggest_base_speed(float(w_kg))
+            "ID_VEHICLE":    vid,
+            "TRUCK":         str(row.get("TRUCK", "Xe tải tiêu chuẩn")).strip(),
+            "MAX_WEIGHT_KG": float(w_kg),
+            "MAX_VOLUME_M3": float(v_m3),
+            "SPD_CORE":      s_core,
+            "SPD_ARTERIAL":  s_art,
+            "SPD_SATELLITE": s_sat,
+            "SPD_SUBURBAN":  s_sub
         })
 
     df_speed_init = pd.DataFrame(speed_rows)
@@ -524,36 +541,30 @@ def render_pre_routing_tab():
         use_container_width=True,
         disabled=["ID_VEHICLE", "TRUCK", "MAX_WEIGHT_KG", "MAX_VOLUME_M3"],
         column_config={
-            "ID_VEHICLE":     st.column_config.TextColumn("🆔 Mã Xe"),
-            "TRUCK":          st.column_config.TextColumn("🚚 Loại Xe"),
-            "MAX_WEIGHT_KG":  st.column_config.NumberColumn("⚖️ Trọng Tải (kg)", format="%.1f"),
-            "MAX_VOLUME_M3":  st.column_config.NumberColumn("📦 Thể Tích (m³)", format="%.2f"),
-            "BASE_SPEED_KMH": st.column_config.NumberColumn(
-                "⚡ Vận Tốc Cơ Sở (km/h)",
-                min_value=5.0,
-                max_value=120.0,
-                step=1.0,
-                format="%.1f",
-                required=True,
-                help="Vận tốc trung bình trong điều kiện giao thông thông thoáng (hệ số tắc đường = 1.0)"
-            )
+            "ID_VEHICLE":    st.column_config.TextColumn("🆔 Mã Xe", pinned=True),
+            "TRUCK":         st.column_config.TextColumn("🚚 Loại Xe", pinned=True),
+            "MAX_WEIGHT_KG": st.column_config.NumberColumn("⚖️ Trọng Tải (kg)", format="%.0f"),
+            "MAX_VOLUME_M3": st.column_config.NumberColumn("📦 Thể Tích (m³)", format="%.1f"),
+            "SPD_CORE":      st.column_config.NumberColumn("🏙️ Đô thị lõi (km/h)", min_value=5.0, max_value=120.0, step=1.0, format="%.0f", required=True),
+            "SPD_ARTERIAL":  st.column_config.NumberColumn("🛣️ Gần trục đường lớn (km/h)", min_value=5.0, max_value=120.0, step=1.0, format="%.0f", required=True),
+            "SPD_SATELLITE": st.column_config.NumberColumn("🏘️ Đô thị vệ tinh (km/h)", min_value=5.0, max_value=120.0, step=1.0, format="%.0f", required=True),
+            "SPD_SUBURBAN":  st.column_config.NumberColumn("🌾 Ngoại thành (km/h)", min_value=5.0, max_value=120.0, step=1.0, format="%.0f", required=True),
         },
-        key="fleet_base_speed_editor"
+        key="fleet_zone_speed_matrix_editor"
     )
 
     out_dir = "output_pre_routing"
     os.makedirs(out_dir, exist_ok=True)
     speed_xlsx_path = os.path.join(out_dir, "DIM_VEHICLE_SPEED.xlsx")
-    with pd.ExcelWriter(speed_xlsx_path, engine="openpyxl") as writer:
-        edited_speed_df.to_excel(writer, sheet_name="DIM_VEHICLE_SPEED", index=False)
+    export_vehicle_speed_matrix_excel(edited_speed_df, speed_xlsx_path)
 
     with open(speed_xlsx_path, "rb") as f:
         st.download_button(
-            label="⬇️ Tải bảng vận tốc cơ sở xe (DIM_VEHICLE_SPEED.xlsx)",
+            label="⬇️ Tải Ma Trận Vận Tốc Cơ Sở Excel (DIM_VEHICLE_SPEED.xlsx)",
             data=f,
             file_name="DIM_VEHICLE_SPEED.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_dim_vehicle_speed"
+            key="dl_dim_vehicle_speed_matrix"
         )
 
     # ------------------------------------------------------------------------
@@ -570,7 +581,7 @@ def render_pre_routing_tab():
         "shifts": shifts_data,
         "split_time": split_time,
         "traffic_matrix": export_records,
-        "fleet_base_speeds": edited_speed_df.to_dict(orient="records") if not edited_speed_df.empty else []
+        "fleet_speed_matrix": edited_speed_df.to_dict(orient="records") if not edited_speed_df.empty else []
     }
     st.divider()
-    st.success("✅ Toàn bộ cấu hình Pre-Routing, Ma trận tắc đường ngang & Vận tốc cơ sở đã được lưu vào hệ thống!")
+    st.success("✅ Toàn bộ cấu hình Pre-Routing, Ma trận tắc đường & Ma trận vận tốc theo khu vực đã được lưu!")
